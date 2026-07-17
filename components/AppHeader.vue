@@ -3,15 +3,14 @@ defineProps<{
   playersOnline: number
 }>()
 
-const formatPlayers = (n: number) => n.toLocaleString('fr-FR').replace(/ /g, ' ')
-</script>
+ </script>
 
 <template>
   <header class="header">
     <div class="logo" />
     <div class="players">
       <span class="players__dot" />
-      <span class="players__label">{{ formatPlayers(playersOnline) }} joueurs en ligne</span>
+      <span class="players__label">{{ playersOnline }} joueurs en ligne</span>
     </div>
   </header>
 </template>
