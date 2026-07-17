@@ -8,7 +8,10 @@ const links = [
 
 <template>
   <footer class="footer">
-    <div class="footer__logo" />
+    <div class="footer__logo">
+      <img src="/icons/logo-symbole-footer.svg" alt="" width="39" height="30">
+      <img src="/icons/logo-texte.svg" alt="Battlemind" width="74" height="11">
+    </div>
     <nav class="footer__nav">
       <NuxtLink v-for="link in links" :key="link.to" class="footer__link" :to="link.to">
         {{ link.label }}
@@ -29,11 +32,10 @@ const links = [
 }
 
 .footer__logo {
-  width: 116px;
-  height: 29px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   flex-shrink: 0;
-  border-radius: var(--radius);
-  background-color: var(--color-secondary);
 }
 
 .footer__nav {
