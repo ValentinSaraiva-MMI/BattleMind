@@ -85,6 +85,12 @@ h4 {
   font-weight: var(--weight-semibold);
 }
 
+/* Focus visible sur tout élément interactif (RGAA 10.7). */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
 /* Texte réservé aux lecteurs d'écran (étiquettes invisibles, RGAA 11). */
 .sr-only {
   position: absolute;
