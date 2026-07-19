@@ -17,16 +17,19 @@ const global = {
 // le vrai useAuth et authErrors s'exécutent (test d'intégration du composant).
 let signInWithPassword: ReturnType<typeof vi.fn>
 let signUp: ReturnType<typeof vi.fn>
+let signInWithOAuth: ReturnType<typeof vi.fn>
 let navigateToMock: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   signInWithPassword = vi.fn().mockResolvedValue({ error: null })
   // Confirmation email active : le cas nominal renvoie une inscription SANS session.
   signUp = vi.fn().mockResolvedValue({ data: { session: null }, error: null })
+  // OAuth : supabase-js redirige le navigateur ; en test on résout sans erreur.
+  signInWithOAuth = vi.fn().mockResolvedValue({ data: { url: 'https://discord.example/oauth' }, error: null })
   navigateToMock = vi.fn()
 
   vi.stubGlobal('useSupabaseClient', () => ({
-    auth: { signInWithPassword, signUp }
+    auth: { signInWithPassword, signUp, signInWithOAuth }
   }))
   vi.stubGlobal('navigateTo', navigateToMock)
 })
@@ -172,6 +175,35 @@ describe('AuthPanel', () => {
       const status = wrapper.find('[role="status"]')
       expect(status.exists()).toBe(true)
       expect(status.text()).toContain('Vérifie ta boîte mail')
+    })
+  })
+
+  describe('OAuth Discord', () => {
+    const findDiscordButton = (wrapper: VueWrapper) =>
+      wrapper.findAll('button').find((button) => button.text().includes('Continuer avec Discord'))
+
+    it("lance la connexion Discord au clic sur « Continuer avec Discord »", async () => {
+      const wrapper = mount(AuthPanel, { global })
+
+      await findDiscordButton(wrapper)!.trigger('click')
+      await flushPromises()
+
+      expect(signInWithOAuth).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: 'discord' })
+      )
+      // Le retour OAuth doit atterrir sur la page de callback /confirm.
+      const options = signInWithOAuth.mock.calls[0]![0].options
+      expect(options.redirectTo).toMatch(/\/confirm$/)
+    })
+
+    it("propose la connexion Discord sur les deux onglets", async () => {
+      const wrapper = mount(AuthPanel, { global })
+
+      expect(findDiscordButton(wrapper), 'présent sur Connexion').toBeTruthy()
+
+      await wrapper.findAll('[role="tab"]')[1]!.trigger('click')
+
+      expect(findDiscordButton(wrapper), 'présent sur Inscription').toBeTruthy()
     })
   })
 

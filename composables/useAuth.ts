@@ -71,5 +71,36 @@ export function useAuth() {
     }
   }
 
-  return { loading, errorMessage, infoMessage, signIn, signUp }
+  /**
+   * Connexion OAuth Discord. Redirige le navigateur vers Discord ; au retour sur
+   * /confirm, le plugin Supabase échange le code contre une session (cf.
+   * pages/confirm.vue). Le pseudo Discord (raw_user_meta_data.full_name) alimente
+   * le trigger SQL qui crée la ligne `profiles`.
+   */
+  const signInWithDiscord = async (): Promise<boolean> => {
+    loading.value = true
+    reset()
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'discord',
+        options: {
+          redirectTo: `${window.location.origin}/confirm`
+        }
+      })
+      if (error) {
+        errorMessage.value = mapAuthError(error)
+        return false
+      }
+      // Succès : supabase-js déclenche la redirection plein écran vers Discord.
+      return true
+    } catch (error) {
+      // Fail closed : toute exception réseau devient un message utilisateur sûr.
+      errorMessage.value = mapAuthError(error)
+      return false
+    } finally {
+      loading.value = false
+    }
+  }
+
+  return { loading, errorMessage, infoMessage, signIn, signUp, signInWithDiscord }
 }
