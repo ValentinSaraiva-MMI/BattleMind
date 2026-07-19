@@ -4,12 +4,14 @@ export default defineNuxtConfig({
   devtools: { enabled: true },
   css: ['~/assets/css/main.css'],
 
-  modules: [
-    '@nuxt/eslint',
-    '@nuxt/fonts',
-    '@nuxt/icon',
-    '@nuxt/image'
-  ],
+  modules: ['@nuxt/eslint', '@nuxt/fonts', '@nuxt/icon', '@nuxt/image', '@nuxtjs/supabase'],
+
+  supabase: {
+    redirectOptions: {
+      login: '/login', 
+      callback: '/confirm', // retour OAuth 
+    }
+  },
 
   fonts: {
     families: [
