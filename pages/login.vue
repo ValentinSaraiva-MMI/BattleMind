@@ -1,6 +1,12 @@
 <script setup lang="ts">
 useHead({ title: 'Connexion — Battlemind' })
 
+// Visiteur déjà authentifié → hub (le middleware ne gère que l'inverse).
+const user = useSupabaseUser()
+watch(user, () => {
+  if (user.value) navigateTo('/')
+}, { immediate: true })
+
 const playersOnline = ref(1248)
 </script>
 

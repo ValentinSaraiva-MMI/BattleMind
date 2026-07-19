@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useAuth } from '~/composables/useAuth'
+import { validateSignupForm } from '~/utils/authErrors'
+
 type AuthTab = 'connexion' | 'inscription'
 
 const tabOrder: AuthTab[] = ['connexion', 'inscription']
@@ -7,7 +10,22 @@ const activeTab = ref<AuthTab>('connexion')
 const login = reactive({ email: '', password: '' })
 const signup = reactive({ pseudo: '', email: '', password: '', passwordConfirm: '' })
 
-// Références des boutons d'onglet, pour déplacer le focus au clavier (roving tabindex).
+const { loading, errorMessage, infoMessage, signIn, signUp } = useAuth()
+
+// Validation client (mots de passe), distincte des erreurs serveur.
+const clientError = ref('')
+
+// Sur inscription, la validation client prime sur l'erreur serveur.
+const signupError = computed(() => clientError.value || errorMessage.value)
+
+// Un changement d'onglet efface les messages (pas de fuite entre formulaires).
+watch(activeTab, () => {
+  errorMessage.value = ''
+  infoMessage.value = ''
+  clientError.value = ''
+})
+
+// Boutons d'onglet, pour déplacer le focus au clavier (roving tabindex).
 const connexionTabRef = ref<HTMLButtonElement | null>(null)
 const inscriptionTabRef = ref<HTMLButtonElement | null>(null)
 
@@ -46,8 +64,26 @@ const onTabKeydown = (event: KeyboardEvent) => {
   focusTab(target)
 }
 
-const onSubmit = () => {
-  // TODO: brancher sur l'API d'authentification
+const onSubmitLogin = async () => {
+  await signIn(login.email, login.password)
+}
+
+const onSubmitSignup = async () => {
+  clientError.value = ''
+  errorMessage.value = ''
+
+  const validationError = validateSignupForm({
+    password: signup.password,
+    passwordConfirm: signup.passwordConfirm
+  })
+  if (validationError) {
+    clientError.value = validationError
+    return
+  }
+
+  // TODO: vérifier l'unicité du pseudo avant signUp (sinon la contrainte UNIQUE
+  // fait échouer le trigger SQL avec une erreur Postgres illisible).
+  await signUp(signup.pseudo, signup.email, signup.password)
 }
 </script>
 
@@ -93,7 +129,7 @@ const onSubmit = () => {
         role="tabpanel"
         aria-labelledby="tab-connexion"
         :hidden="activeTab !== 'connexion'"
-        @submit.prevent="onSubmit"
+        @submit.prevent="onSubmitLogin"
       >
         <template v-if="activeTab === 'connexion'">
           <label class="sr-only" for="login-email">Adresse email (obligatoire)</label>
@@ -105,6 +141,8 @@ const onSubmit = () => {
             placeholder="Email"
             autocomplete="email"
             required
+            :aria-invalid="errorMessage ? 'true' : undefined"
+            :aria-describedby="errorMessage ? 'login-error' : undefined"
           >
           <label class="sr-only" for="login-password">Mot de passe (obligatoire)</label>
           <input
@@ -115,11 +153,23 @@ const onSubmit = () => {
             placeholder="Mot de passe"
             autocomplete="current-password"
             required
+            :aria-invalid="errorMessage ? 'true' : undefined"
+            :aria-describedby="errorMessage ? 'login-error' : undefined"
           >
-          <div class="form__aside">
-            <NuxtLink class="link" to="/mot-de-passe-oublie">Mot de passe oublié ?</NuxtLink>
-          </div>
-          <button class="button button--primary" type="submit">Se connecter</button>
+          <p v-if="errorMessage" id="login-error" class="form__error" role="alert">
+            <svg class="form__error-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
+              <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
+            </svg>
+            {{ errorMessage }}
+          </p>
+          <button
+            class="button button--primary"
+            type="submit"
+            :disabled="loading"
+            :aria-busy="loading ? 'true' : undefined"
+          >
+            {{ loading ? 'Connexion…' : 'Se connecter' }}
+          </button>
         </template>
       </form>
 
@@ -129,7 +179,7 @@ const onSubmit = () => {
         role="tabpanel"
         aria-labelledby="tab-inscription"
         :hidden="activeTab !== 'inscription'"
-        @submit.prevent="onSubmit"
+        @submit.prevent="onSubmitSignup"
       >
         <template v-if="activeTab === 'inscription'">
           <label class="sr-only" for="signup-pseudo">Pseudo (obligatoire)</label>
@@ -151,6 +201,8 @@ const onSubmit = () => {
             placeholder="Email"
             autocomplete="email"
             required
+            :aria-invalid="signupError ? 'true' : undefined"
+            :aria-describedby="signupError ? 'signup-error' : undefined"
           >
           <label class="sr-only" for="signup-password">Mot de passe (obligatoire)</label>
           <input
@@ -161,6 +213,8 @@ const onSubmit = () => {
             placeholder="Mot de passe"
             autocomplete="new-password"
             required
+            :aria-invalid="signupError ? 'true' : undefined"
+            :aria-describedby="signupError ? 'signup-error' : undefined"
           >
           <label class="sr-only" for="signup-password-confirm">Confirmer le mot de passe (obligatoire)</label>
           <input
@@ -171,8 +225,26 @@ const onSubmit = () => {
             placeholder="Confirmer le mot de passe"
             autocomplete="new-password"
             required
+            :aria-invalid="signupError ? 'true' : undefined"
+            :aria-describedby="signupError ? 'signup-error' : undefined"
           >
-          <button class="button button--primary" type="submit">S'inscrire</button>
+          <p v-if="signupError" id="signup-error" class="form__error" role="alert">
+            <svg class="form__error-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
+              <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
+            </svg>
+            {{ signupError }}
+          </p>
+          <p v-if="infoMessage" id="signup-info" class="form__info" role="status">
+            {{ infoMessage }}
+          </p>
+          <button
+            class="button button--primary"
+            type="submit"
+            :disabled="loading"
+            :aria-busy="loading ? 'true' : undefined"
+          >
+            {{ loading ? 'Inscription…' : "S'inscrire" }}
+          </button>
         </template>
       </form>
 
@@ -262,6 +334,34 @@ const onSubmit = () => {
   display: none;
 }
 
+/* Message d'erreur : couleur danger DOUBLÉE d'une icône et d'un texte (RGAA 3.1). */
+.form__error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  line-height: 16px;
+}
+
+.form__error-icon {
+  flex-shrink: 0;
+}
+
+/* Message d'information (ex. vérification email) : équivalent en couleur info. */
+.form__info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--color-info);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  line-height: 16px;
+}
+
 .input {
   width: 100%;
   padding: 14px 17px;
@@ -326,6 +426,16 @@ const onSubmit = () => {
 
 .button--primary:hover {
   filter: brightness(1.08);
+}
+
+/* État désactivé (pendant une requête) : exempté de contraste (RGAA 3.2). */
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.button:disabled:hover {
+  filter: none;
 }
 
 .button--ghost {

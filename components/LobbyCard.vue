@@ -220,8 +220,6 @@ const statusLabel = computed(() => (props.lobby.status === 'full' ? 'Full' : 'Wa
   border-color: var(--color-accent);
 }
 
-/* Partie complète : aucune action possible → contenu estompé (exemption RGAA
-   des éléments désactivés), le statut « Full » reste lisible en pleine opacité. */
 .card--full .card__players,
 .card--full .card__host {
   opacity: 0.5;
