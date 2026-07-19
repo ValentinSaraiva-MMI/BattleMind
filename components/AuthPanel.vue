@@ -10,7 +10,7 @@ const activeTab = ref<AuthTab>('connexion')
 const login = reactive({ email: '', password: '' })
 const signup = reactive({ pseudo: '', email: '', password: '', passwordConfirm: '' })
 
-const { loading, errorMessage, infoMessage, signIn, signUp } = useAuth()
+const { loading, errorMessage, infoMessage, signIn, signUp, signInWithDiscord } = useAuth()
 
 // Validation client (mots de passe), distincte des erreurs serveur.
 const clientError = ref('')
@@ -85,6 +85,11 @@ const onSubmitSignup = async () => {
   // fait échouer le trigger SQL avec une erreur Postgres illisible).
   await signUp(signup.pseudo, signup.email, signup.password)
 }
+
+const onDiscord = async () => {
+  clientError.value = ''
+  await signInWithDiscord()
+}
 </script>
 
 <template>
@@ -104,7 +109,7 @@ const onSubmitSignup = async () => {
           @click="activeTab = 'connexion'"
           @keydown="onTabKeydown"
         >
-          Connexion
+          ConnexionDDDDD
         </button>
         <button
           id="tab-inscription"
@@ -255,7 +260,13 @@ const onSubmitSignup = async () => {
       </div>
 
       <div class="providers">
-        <button class="button button--ghost" type="button">
+        <button
+          class="button button--ghost"
+          type="button"
+          :disabled="loading"
+          :aria-busy="loading ? 'true' : undefined"
+          @click="onDiscord"
+        >
           <img class="button__icon" src="/icons/discord.svg" alt="" width="16" height="16">
           Continuer avec Discord
         </button>
