@@ -109,8 +109,7 @@ const onDiscord = async () => {
           @click="activeTab = 'connexion'"
           @keydown="onTabKeydown"
         >
-          ConnexionDDDDD
-        </button>
+          Connexion        </button>
         <button
           id="tab-inscription"
           ref="inscriptionTabRef"
