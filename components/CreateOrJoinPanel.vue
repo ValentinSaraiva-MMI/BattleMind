@@ -1,13 +1,30 @@
 <script setup lang="ts">
+import { normalizeLobbyCode } from '~/utils/lobby'
+
+defineProps<{
+  /** Jonction en cours : verrouille le formulaire et annonce l'attente. */
+  pending?: boolean
+  /** Message d'échec remonté par le parent (`useLobby`). */
+  errorMessage?: string
+}>()
+
+const emit = defineEmits<{
+  create: []
+  join: [code: string]
+}>()
+
 const joinCode = ref('')
 
-const onCreate = () => {
-  // TODO: brancher la création de partie (Supabase)
+/**
+ * Le code ne contient que des chiffres : on filtre la frappe plutôt que de
+ * laisser partir une saisie invalide. La validation qui fait foi reste celle de
+ * la fonction Postgres `join_lobby_by_code`.
+ */
+const onCodeInput = (event: Event) => {
+  joinCode.value = normalizeLobbyCode((event.target as HTMLInputElement).value)
 }
 
-const onJoin = () => {
-  // TODO: brancher la jonction par code (Supabase)
-}
+const onJoin = () => emit('join', joinCode.value)
 </script>
 
 <template>
@@ -15,7 +32,7 @@ const onJoin = () => {
     <div class="panel__part">
       <h2 class="panel__title">Créez</h2>
       <p class="panel__text">Créez rapidement une partie et laissez vous porter par la culture.</p>
-      <button class="button" type="button" @click="onCreate">
+      <button class="button" type="button" :disabled="pending" @click="emit('create')">
         <img src="/icons/plus.svg" alt="" width="12" height="12">
         Créer une partie
       </button>
@@ -27,19 +44,31 @@ const onJoin = () => {
       <h2 class="panel__title">Rejoignez</h2>
       <p class="panel__text">Entrez le code a 6 caractères pour rejoindre une partie.</p>
       <form class="join" @submit.prevent="onJoin">
-        <label class="sr-only" for="join-code">Code de la partie (6 caractères, obligatoire)</label>
+        <label class="sr-only" for="join-code">Code de la partie (6 chiffres, obligatoire)</label>
         <input
           id="join-code"
-          v-model="joinCode"
           class="join__input"
           type="text"
+          inputmode="numeric"
           placeholder="000000"
           maxlength="6"
           required
           autocomplete="off"
+          :value="joinCode"
+          :disabled="pending"
+          :aria-invalid="errorMessage ? 'true' : undefined"
+          :aria-describedby="errorMessage ? 'join-code-error' : undefined"
+          @input="onCodeInput"
         >
-        <button class="button" type="submit">Rejoindre une partie</button>
+        <button class="button" type="submit" :disabled="pending" :aria-busy="pending">
+          {{ pending ? 'Connexion…' : 'Rejoindre une partie' }}
+        </button>
       </form>
+      <!-- Erreur doublée d'une icône : jamais portée par la seule couleur (RGAA 3.1). -->
+      <p v-if="errorMessage" id="join-code-error" class="join__error" role="alert">
+        <img src="/icons/close.svg" alt="" width="10" height="10">
+        {{ errorMessage }}
+      </p>
     </div>
   </section>
 </template>
@@ -107,8 +136,13 @@ const onJoin = () => {
   transition: filter 0.15s ease;
 }
 
-.button:hover {
+.button:hover:not(:disabled) {
   filter: brightness(1.08);
+}
+
+.button:disabled {
+  cursor: progress;
+  opacity: 0.7;
 }
 
 .join {
@@ -138,6 +172,17 @@ const onJoin = () => {
 .join__input:focus-visible {
   border-color: var(--color-accent);
   outline: none;
+}
+
+.join__error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  line-height: 16px;
 }
 
 @media (max-width: 800px) {
