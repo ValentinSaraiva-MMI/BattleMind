@@ -1,0 +1,225 @@
+// @vitest-environment happy-dom
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { ref } from 'vue'
+import { mount, flushPromises } from '@vue/test-utils'
+import LobbyPage from '~/pages/lobby/[id].vue'
+
+const LOBBY = {
+  id: 'lobby-1',
+  code: '654321',
+  name: 'Neon Protocol',
+  category: 'culture_generale',
+  access: 'private',
+  max_players: 6,
+  powerups_enabled: true,
+  status: 'waiting',
+  host_id: 'user-1',
+  lobby_players: [
+    { id: 'lp-1', user_id: 'user-1', is_host: true, is_ready: true, profile: { pseudo: 'AlexTheQuizz', xp: 6250 } },
+    { id: 'lp-2', user_id: 'user-2', is_host: false, is_ready: false, profile: { pseudo: 'CipherX', xp: 3500 } }
+  ]
+}
+
+let table: Record<string, ReturnType<typeof vi.fn>> & { result: unknown }
+let from: ReturnType<typeof vi.fn>
+let navigateToMock: ReturnType<typeof vi.fn>
+let writeText: ReturnType<typeof vi.fn>
+let currentUser: string | null
+
+const makeTable = () => {
+  const built = { result: { data: LOBBY, error: null } } as never as Record<string, ReturnType<typeof vi.fn>> & {
+    result: unknown
+    then: (onFulfilled?: unknown, onRejected?: unknown) => Promise<unknown>
+  }
+
+  for (const method of ['select', 'insert', 'update', 'delete', 'eq', 'order'] as const) {
+    built[method] = vi.fn(() => built)
+  }
+  built.single = vi.fn(() => Promise.resolve(built.result))
+  built.then = (onFulfilled, onRejected) =>
+    Promise.resolve(built.result).then(onFulfilled as never, onRejected as never)
+
+  return built
+}
+
+const mountPage = () =>
+  mount(LobbyPage, {
+    global: { stubs: { NuxtLink: { props: ['to'], template: '<a :href="to"><slot /></a>' } } }
+  })
+
+beforeEach(() => {
+  table = makeTable()
+  from = vi.fn(() => table)
+  navigateToMock = vi.fn()
+  writeText = vi.fn().mockResolvedValue(undefined)
+  currentUser = 'user-1'
+
+  vi.stubGlobal('useSupabaseClient', () => ({
+    from,
+    auth: { getSession: vi.fn().mockResolvedValue({ data: { session: null } }) }
+  }))
+  vi.stubGlobal('useSupabaseUser', () => ref(currentUser ? { sub: currentUser } : null))
+  vi.stubGlobal('useRoute', () => ({ params: { id: 'lobby-1' } }))
+  vi.stubGlobal('useHead', () => {})
+  vi.stubGlobal('navigateTo', navigateToMock)
+  Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+describe('Page salon — contenu', () => {
+  it('affiche le nom du salon en titre de niveau 1 unique', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const headings = wrapper.findAll('h1')
+    expect(headings).toHaveLength(1)
+    expect(headings[0]!.text()).toBe('Neon Protocol')
+  })
+
+  it('met le code d’accès en forme lisible', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.find('.code__value').text()).toBe('654 321')
+  })
+
+  it('affiche les joueurs connectés et complète la grille de places libres', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('AlexTheQuizz')
+    expect(wrapper.text()).toContain('CipherX')
+    expect(wrapper.text()).toContain('2 / 6 connectés')
+    // 6 places, 2 occupées → 4 cases « en attente de connexion ».
+    expect(wrapper.findAll('.slot')).toHaveLength(4)
+  })
+
+  it('double le statut de chaque joueur d’un texte, jamais de la seule couleur', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const statuses = wrapper.findAll('.player__status').map(node => node.text())
+    expect(statuses[0]).toContain('Prêt')
+    expect(statuses[1]).toContain('Synchronisation')
+  })
+
+  it('identifie l’hôte par un badge texte, pas seulement par la bordure', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const host = wrapper.find('.player--host')
+    expect(host.find('.player__badge').text()).toBe('Hôte')
+    expect(host.text()).toContain('AlexTheQuizz')
+  })
+
+  it('restitue les paramètres en lecture seule', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const settings = wrapper.find('.settings').text()
+    expect(settings).toContain('Culture générale')
+    expect(settings).toContain('Privé')
+    expect(settings).toContain('6 max')
+    expect(settings).toContain('Activé')
+    // Lecture seule : aucun contrôle de saisie dans le panneau.
+    expect(wrapper.find('.settings input').exists()).toBe(false)
+  })
+
+  it('signale un salon introuvable sans laisser la page vide', async () => {
+    table.result = { data: null, error: { code: 'PGRST116' } }
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.findAll('h1')).toHaveLength(1)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Retour à l’accueil')
+  })
+})
+
+describe('Page salon — copie du code', () => {
+  it('copie le code brut et le confirme dans une zone de statut', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    await wrapper.find('.code__copy').trigger('click')
+    await flushPromises()
+
+    // C'est le code sans espace qui se colle dans le champ « Rejoindre ».
+    expect(writeText).toHaveBeenCalledWith('654321')
+    expect(wrapper.find('[role="status"]').text()).toContain('Code copié')
+  })
+
+  it('donne au bouton copier un nom accessible', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.find('.code__copy').text()).toContain('Copier le code')
+  })
+
+  it('avoue l’échec plutôt que de laisser croire à une copie réussie', async () => {
+    writeText.mockRejectedValue(new Error('denied'))
+    const wrapper = mountPage()
+    await flushPromises()
+
+    await wrapper.find('.code__copy').trigger('click')
+    await flushPromises()
+
+    const feedback = wrapper.find('[role="status"]').text()
+    expect(feedback).toContain('Copie impossible')
+    // Le code reste lisible pour être recopié à la main.
+    expect(feedback).toContain('654 321')
+  })
+})
+
+describe('Page salon — actions', () => {
+  it('réserve « Lancer l’arène » à l’hôte', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Lancer l’arène')
+  })
+
+  it('masque « Lancer l’arène » pour un joueur non hôte', async () => {
+    currentUser = 'user-2'
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('Lancer l’arène')
+    // Quitter reste évidemment possible.
+    expect(wrapper.text()).toContain('Quitter le salon')
+  })
+
+  it('passe le salon en in_progress au lancement', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    await wrapper.find('.button--primary').trigger('click')
+    await flushPromises()
+
+    expect(table.update).toHaveBeenCalledWith({ status: 'in_progress' })
+  })
+
+  it('quitte le salon puis revient à l’accueil', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    await wrapper.find('.button--danger').trigger('click')
+    await flushPromises()
+
+    expect(table.delete).toHaveBeenCalled()
+    expect(table.eq).toHaveBeenCalledWith('user_id', 'user-1')
+    expect(navigateToMock).toHaveBeenCalledWith('/')
+  })
+
+  it('présente le lien d’invitation comme désactivé et à venir', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const soon = wrapper.find('.soon')
+    expect(soon.find('button').attributes('disabled')).toBeDefined()
+    expect(soon.text()).toContain('Bientôt disponible')
+  })
+})
