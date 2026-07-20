@@ -1,4 +1,7 @@
 <script setup lang="ts">
+// Page de transit (callback OAuth / confirmation) : aucun chrome applicatif.
+definePageMeta({ layout: false })
+
 useHead({ title: 'Connexion en cours — Battlemind' })
 
 // Cible de callback (OAuth Discord + confirmation email) : le plugin Supabase

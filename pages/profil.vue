@@ -1,54 +1,124 @@
 <script setup lang="ts">
-import type { PlayerSummary } from '~/components/HubNav.vue'
+import { winRate } from '~/composables/useProgression'
+import { useProfile } from '~/composables/useProfile'
 
 useHead({ title: 'Profil — Battlemind' })
 
-// Intégration statique : toutes les valeurs viennent de la maquette.
-// Le branchement Supabase (profil, XP, statistiques) arrive en MR 2.
-const player: PlayerSummary = {
-  pseudo: 'AlexTheQuizz',
-  initials: 'AT',
-  level: 13,
-  xpPercent: 67,
-  battlecoins: 1250
+const supabase = useSupabaseClient()
+const user = useSupabaseUser()
+
+// État partagé avec le layout : le chip d'en-tête et cette page lisent le même
+// profil, chargé une seule fois pour toute la navigation.
+const { profile, status, errorMessage, initials, level, xp, reset } = useProfile()
+
+const formatCount = (value: number) => value.toLocaleString('en-US')
+
+/**
+ * Statistiques de carrière. Le taux de réussite est dérivé (jamais stocké) et
+ * vaut « — » sur un profil neuf — doublé d'une mention lisible par lecteur
+ * d'écran, le tiret seul ne portant aucune information (RGAA 3.1).
+ */
+const stats = computed(() => {
+  const p = profile.value
+  if (!p) return []
+
+  const rate = winRate(p.games_won, p.games_played)
+
+  return [
+    { id: 'played', label: 'Parties jouées', value: formatCount(p.games_played), hint: '' },
+    { id: 'won', label: 'Victoires', value: formatCount(p.games_won), hint: '' },
+    {
+      id: 'winrate',
+      label: 'Taux de réussite',
+      value: rate === null
+        ? '—'
+        : `${rate.toLocaleString('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`,
+      hint: rate === null ? 'Non disponible : aucune partie jouée' : ''
+    },
+    { id: 'powerups', label: 'Power-ups utilisés', value: formatCount(p.powerups_used), hint: '' }
+  ]
+})
+
+const signingOut = ref(false)
+const signOutError = ref('')
+
+/** Déconnexion puis retour sur la page de connexion. */
+const handleSignOut = async () => {
+  if (signingOut.value) return
+
+  signingOut.value = true
+  signOutError.value = ''
+
+  try {
+    const { error } = await supabase.auth.signOut()
+
+    if (error) {
+      signOutError.value = 'La déconnexion a échoué. Réessaie.'
+      return
+    }
+
+    // Vide l'état partagé : sans ça le chip d'en-tête garderait le profil
+    // du compte précédent jusqu'au prochain rechargement complet.
+    reset()
+    await navigateTo('/login')
+  } catch {
+    signOutError.value = 'La déconnexion a échoué. Réessaie.'
+  } finally {
+    signingOut.value = false
+  }
 }
 
-const email = 'alex@battlemind.gg'
-
-const xp = { current: 4250, target: 6000 }
-const xpPercent = (xp.current / xp.target) * 100
-
-const stats = [
-  { id: 'played', label: 'Parties jouées', value: '142' },
-  { id: 'won', label: 'Victoires', value: '89' },
-  { id: 'winrate', label: 'Taux de réussite', value: '62,7%' },
-  { id: 'powerups', label: 'Power-ups utilisés', value: '57' }
-]
-
 // Vignettes de la galerie : hors périmètre, purement décoratives (voile « Bientôt disponible »).
+// Aucun câblage prévu ici : badges, objectif et notifications restent inertes.
 const badgePreviews = [1, 2, 3, 4, 5, 6]
 </script>
 
 <template>
-  <div class="page">
-    <HubNav :player="player" />
+  <main class="main">
+    <!-- Chargement : un h1 est présent dans chaque état pour ne jamais laisser la page sans titre. -->
+    <template v-if="status === 'pending'">
+      <h1 class="sr-only">Profil</h1>
+      <p class="state" role="status">Chargement de ton profil…</p>
+    </template>
 
-    <main class="main">
+    <!-- Profil introuvable : la déconnexion reste accessible pour repartir d'une session saine. -->
+    <template v-else-if="!profile">
+      <h1 class="sr-only">Profil</h1>
+      <p class="state state--error" role="alert">{{ errorMessage }}</p>
+      <button class="logout logout--standalone" type="button" :disabled="signingOut" :aria-busy="signingOut" @click="handleSignOut">
+        <img src="/icons/door-open.svg" alt="" width="24" height="24">
+        {{ signingOut ? 'Déconnexion…' : 'Déconnexion' }}
+      </button>
+      <p v-if="signOutError" class="state" role="alert">{{ signOutError }}</p>
+    </template>
+
+    <template v-else>
       <section class="hero">
-        <p class="hero__avatar" aria-hidden="true">{{ player.initials }}</p>
+        <img
+          v-if="profile.avatar_url"
+          class="hero__avatar hero__avatar--image"
+          :src="profile.avatar_url"
+          alt=""
+          width="192"
+          height="192"
+        >
+        <!-- Pas d'avatar : repli sur les initiales du pseudo, déjà annoncé par le h1. -->
+        <p v-else class="hero__avatar" aria-hidden="true">{{ initials }}</p>
 
         <div class="hero__identity">
           <h1 class="hero__pseudo">
-            <span class="sr-only">Profil de </span>{{ player.pseudo }}
+            <span class="sr-only">Profil de </span>{{ profile.pseudo }}
           </h1>
-          <p class="hero__email">{{ email }}</p>
+          <p class="hero__email">{{ user?.email }}</p>
         </div>
 
-        <!-- Câblage de la déconnexion en MR 2 : le bouton reste inerte pour cette intégration. -->
-        <button class="logout" type="button">
-          <img src="/icons/door-open.svg" alt="" width="24" height="24">
-          Déconnexion
-        </button>
+        <div class="hero__actions">
+          <button class="logout" type="button" :disabled="signingOut" :aria-busy="signingOut" @click="handleSignOut">
+            <img src="/icons/door-open.svg" alt="" width="24" height="24">
+            {{ signingOut ? 'Déconnexion…' : 'Déconnexion' }}
+          </button>
+          <p v-if="signOutError" class="hero__error" role="alert">{{ signOutError }}</p>
+        </div>
       </section>
 
       <div class="grid">
@@ -59,10 +129,10 @@ const badgePreviews = [1, 2, 3, 4, 5, 6]
             <div class="progress__header">
               <div>
                 <h2 id="progress-title" class="progress__title">Progression actuelle</h2>
-                <p class="progress__level">Niveau {{ player.level }}</p>
+                <p class="progress__level">Niveau {{ level }}</p>
               </div>
               <p class="progress__next">
-                <span class="sr-only">Niveau suivant : </span>{{ player.level + 1 }}
+                <span class="sr-only">Niveau suivant : </span>{{ level + 1 }}
               </p>
             </div>
 
@@ -76,7 +146,7 @@ const badgePreviews = [1, 2, 3, 4, 5, 6]
                 :aria-valuemax="xp.target"
                 :aria-valuetext="`${xp.current.toLocaleString('en-US')} sur ${xp.target.toLocaleString('en-US')} points d'expérience`"
               >
-                <span class="bar__fill" :style="{ width: `${xpPercent}%` }" />
+                <span class="bar__fill" :style="{ width: `${xp.percent}%` }" />
               </div>
               <p class="progress__xp">
                 {{ xp.current.toLocaleString('en-US') }} / {{ xp.target.toLocaleString('en-US') }} XP
@@ -91,7 +161,7 @@ const badgePreviews = [1, 2, 3, 4, 5, 6]
                 <div>
                   <p class="tile__label">Solde battlecoin</p>
                   <p class="tile__value">
-                    {{ player.battlecoins.toLocaleString('en-US') }}
+                    {{ formatCount(profile.battlecoin_balance) }}
                     <span class="tile__unit" aria-hidden="true">B</span>
                     <span class="sr-only">battlecoins</span>
                   </p>
@@ -124,7 +194,11 @@ const badgePreviews = [1, 2, 3, 4, 5, 6]
             <ul class="stats__grid">
               <li v-for="stat in stats" :key="stat.id" class="stat">
                 <p class="stat__label">{{ stat.label }}</p>
-                <p class="stat__value">{{ stat.value }}</p>
+                <p class="stat__value">
+                  {{ stat.value }}
+                  <!-- Le « — » seul ne dit rien à un lecteur d'écran : on double par un texte. -->
+                  <span v-if="stat.hint" class="sr-only">{{ stat.hint }}</span>
+                </p>
               </li>
             </ul>
           </section>
@@ -162,20 +236,12 @@ const badgePreviews = [1, 2, 3, 4, 5, 6]
           <p class="stub__veil">Bientôt disponible</p>
         </aside>
       </div>
-    </main>
-
-    <AppFooter />
-  </div>
+    </template>
+  </main>
 </template>
 
 <style scoped>
-.page {
-  display: flex;
-  flex-direction: column;
-  min-height: 100vh;
-  background-color: var(--color-background);
-}
-
+/* `.page` (colonne pleine hauteur + fond) vit desormais dans layouts/default.vue. */
 .main {
   display: flex;
   flex: 1;
@@ -185,6 +251,24 @@ const badgePreviews = [1, 2, 3, 4, 5, 6]
   max-width: 1280px;
   margin: 0 auto;
   padding: 42px 24px;
+}
+
+/* États de chargement / erreur */
+
+.state {
+  margin: 0;
+  padding: 24px;
+  border: 1px solid var(--color-border-interactive);
+  border-radius: var(--radius-lg);
+  background-color: var(--color-surface-overlay);
+  color: var(--color-text);
+  font-size: var(--text-md);
+  line-height: 20px;
+}
+
+/* L'erreur reste identifiable sans la couleur : le texte du message porte l'information. */
+.state--error {
+  border-left: 4px solid var(--color-danger-strong);
 }
 
 /* En-tête profil */
@@ -216,6 +300,11 @@ const badgePreviews = [1, 2, 3, 4, 5, 6]
   line-height: 1;
 }
 
+/* Avatar réel : même gabarit que le repli initiales. */
+.hero__avatar--image {
+  object-fit: cover;
+}
+
 .hero__identity {
   display: flex;
   flex: 1;
@@ -240,6 +329,21 @@ const badgePreviews = [1, 2, 3, 4, 5, 6]
   line-height: 20px;
 }
 
+.hero__actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.hero__error {
+  margin: 0;
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  line-height: 16px;
+}
+
 .logout {
   display: flex;
   align-items: center;
@@ -262,6 +366,16 @@ const badgePreviews = [1, 2, 3, 4, 5, 6]
 .logout:hover,
 .logout:focus-visible {
   opacity: 0.85;
+}
+
+.logout:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+/* Hors du hero (état « profil introuvable ») : le bouton ne s'étire pas. */
+.logout--standalone {
+  align-self: flex-start;
 }
 
 /* Grille principale */

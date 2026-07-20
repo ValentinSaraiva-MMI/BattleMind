@@ -10,12 +10,16 @@ export interface PlayerSummary {
 </script>
 
 <script setup lang="ts">
+// `null` tant que le profil n'est pas chargé : le chip affiche alors un squelette
+// neutre plutôt que de disparaître (évite un saut de mise en page).
 const props = defineProps<{
-  player: PlayerSummary
+  player: PlayerSummary | null
 }>()
 
 // Format du design (« 1,250 ») — séparateur de milliers par virgule.
-const formattedBattlecoins = computed(() => props.player.battlecoins.toLocaleString('en-US'))
+const formattedBattlecoins = computed(() =>
+  props.player ? props.player.battlecoins.toLocaleString('en-US') : ''
+)
 </script>
 
 <template>
@@ -46,7 +50,22 @@ const formattedBattlecoins = computed(() => props.player.battlecoins.toLocaleStr
     <div class="actions">
 
 
-      <div class="chip">
+      <!-- Profil pas encore chargé : squelette purement décoratif. Aucune valeur
+           n'est annoncée tant qu'elle n'est pas connue (pas de « Lv.0 » trompeur). -->
+      <div v-if="!player" class="chip chip--loading" aria-hidden="true">
+        <span class="chip__avatar" />
+        <div class="chip__body">
+          <p class="chip__identity">
+            <span class="chip__skeleton chip__skeleton--pseudo" />
+          </p>
+          <div class="chip__meta">
+            <div class="chip__xp" />
+            <p class="chip__currency">—</p>
+          </div>
+        </div>
+      </div>
+
+      <div v-else class="chip">
         <span class="chip__avatar" aria-hidden="true">{{ player.initials }}</span>
         <div class="chip__body">
           <p class="chip__identity">
@@ -183,6 +202,22 @@ const formattedBattlecoins = computed(() => props.player.battlecoins.toLocaleStr
   font-family: var(--font-display);
   font-size: var(--text-sm);
   font-weight: var(--weight-medium);
+}
+
+/* Squelette de chargement : mêmes gabarits que le chip réel, sans aucune valeur. */
+.chip__skeleton {
+  display: block;
+  height: 12px;
+  border-radius: 9999px;
+  background-color: var(--color-surface-overlay);
+}
+
+.chip__skeleton--pseudo {
+  width: 96px;
+}
+
+.chip--loading .chip__avatar {
+  background-color: var(--color-surface-overlay);
 }
 
 .chip__identity {
