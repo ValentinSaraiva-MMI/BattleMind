@@ -61,4 +61,31 @@ describe('HubNav', () => {
     expect(wrapper.text()).toContain('1,250')
     expect(wrapper.text()).toContain('battlecoins')
   })
+
+  describe('profil pas encore chargé (player = null)', () => {
+    const mountLoading = () => mount(HubNav, { global, props: { player: null } })
+
+    it('conserve la navigation et le chip pour éviter un saut de mise en page', () => {
+      const wrapper = mountLoading()
+
+      expect(wrapper.find('nav').exists()).toBe(true)
+      expect(wrapper.find('.chip--loading').exists()).toBe(true)
+    })
+
+    it('n\'affiche aucune valeur tant qu\'elle est inconnue', () => {
+      const text = mountLoading().text()
+
+      expect(text).not.toContain('Lv.')
+      expect(text).not.toContain('NaN')
+      expect(text).not.toContain('undefined')
+    })
+
+    it('masque le squelette aux technologies d\'assistance', () => {
+      const wrapper = mountLoading()
+
+      expect(wrapper.find('.chip--loading').attributes('aria-hidden')).toBe('true')
+      // Pas de progressbar sans valeur : un ARIA partiel est pire qu'aucun ARIA.
+      expect(wrapper.find('[role="progressbar"]').exists()).toBe(false)
+    })
+  })
 })

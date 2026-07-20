@@ -1,18 +1,10 @@
 <script setup lang="ts">
 import type { Lobby } from '~/components/LobbyCard.vue'
-import type { PlayerSummary } from '~/components/HubNav.vue'
 
 useHead({ title: 'Accueil — Battlemind' })
 
-// Données factices en attendant le branchement Supabase (profils, lobbies, Realtime).
-const player: PlayerSummary = {
-  pseudo: 'AlexTheQuizz',
-  initials: 'AT',
-  level: 13,
-  xpPercent: 67,
-  battlecoins: 1250
-}
-
+// Le chip joueur est rendu par le layout par défaut, à partir de `useProfile()`.
+// Données factices restantes : lobbies (branchement Realtime à venir).
 const lobbies: Lobby[] = [
   { id: 'neon-protocol', name: 'Neon Protocol', category: 'Culture générale', status: 'waiting', players: 6, maxPlayers: 8, host: 'CipherX' },
   { id: 'data-mines', name: 'Data Mines', category: 'Sciences', status: 'waiting', players: 2, maxPlayers: 4, host: 'NullPtr' },
@@ -28,41 +20,29 @@ const onJoinLobby = (_id: string) => {
 </script>
 
 <template>
-  <div class="page">
-    <HubNav :player="player" />
+  <main class="main">
+    <h1 class="sr-only">Accueil</h1>
 
-    <main class="main">
-      <h1 class="sr-only">Accueil</h1>
+    <CreateOrJoinPanel />
 
-      <CreateOrJoinPanel />
-
-      <section class="lobbies" aria-labelledby="lobbies-title">
-        <div class="lobbies__header">
-          <h2 id="lobbies-title" class="lobbies__title">
-            <img src="/icons/grid.svg" alt="" width="17" height="13">
-            Parties public
-          </h2>
-        </div>
-        <ul class="lobbies__grid">
-          <li v-for="lobby in lobbies" :key="lobby.id" class="lobbies__item">
-            <LobbyCard :lobby="lobby" @join="onJoinLobby" />
-          </li>
-        </ul>
-      </section>
-    </main>
-
-    <AppFooter />
-  </div>
+    <section class="lobbies" aria-labelledby="lobbies-title">
+      <div class="lobbies__header">
+        <h2 id="lobbies-title" class="lobbies__title">
+          <img src="/icons/grid.svg" alt="" width="17" height="13">
+          Parties public
+        </h2>
+      </div>
+      <ul class="lobbies__grid">
+        <li v-for="lobby in lobbies" :key="lobby.id" class="lobbies__item">
+          <LobbyCard :lobby="lobby" @join="onJoinLobby" />
+        </li>
+      </ul>
+    </section>
+  </main>
 </template>
 
 <style scoped>
-.page {
-  display: flex;
-  flex-direction: column;
-  min-height: 100vh;
-  background-color: var(--color-background);
-}
-
+/* `.page` (colonne pleine hauteur + fond) vit désormais dans layouts/default.vue. */
 .main {
   display: flex;
   flex: 1;

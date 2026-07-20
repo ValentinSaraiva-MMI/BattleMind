@@ -1,4 +1,7 @@
 <script setup lang="ts">
+// Page publique : en-tête propre (AppHeader), pas le chip joueur du layout connecté.
+definePageMeta({ layout: false })
+
 useHead({ title: 'Connexion — Battlemind' })
 
 // Visiteur déjà authentifié → hub (le middleware ne gère que l'inverse).
