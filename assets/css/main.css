@@ -14,6 +14,7 @@
   --salmon-500: rgb(232 131 88);
   --blue-900: rgb(0 13 99);
   --red-500: rgb(239 68 68);
+  --red-700: rgb(185 28 28);
 
   /* Couleurs sémantiques */
   --color-background: var(--black);
@@ -32,7 +33,12 @@
   --color-secondary: var(--salmon-500);
   --color-success: var(--green-500);
   --color-danger: var(--red-500);
+  /* Fond des boutons destructifs : --color-danger ne monte qu'à 3,4:1 avec --color-text (RGAA 3.2 exige 4,5:1). */
+  --color-danger-strong: var(--red-700);
   --color-info: var(--turquoise-500);
+
+  /* Voile posé sur les blocs hors périmètre (« Bientôt disponible »). */
+  --color-veil: rgb(12 12 15 / 0.5);
 
   --color-border: rgb(255 255 255 / 0.08);
   --color-border-subtle: var(--gray-900);
@@ -41,12 +47,14 @@
 
   /* Rayon */
   --radius: 8px;
+  --radius-lg: 12px;
 
   /* Typographie : Saira pour l'affichage (titres, chiffres, labels techniques), Montserrat pour le texte courant */
   --font-display: 'Saira', system-ui, sans-serif;
   --font-body: 'Montserrat', system-ui, sans-serif;
 
   /* Taille */
+  --text-display: 100px;
   --text-question: 40px;
   --text-3xl: 30px;
   --text-2xl: 24px;

@@ -44,11 +44,7 @@ const formattedBattlecoins = computed(() => props.player.battlecoins.toLocaleStr
     </nav>
 
     <div class="actions">
-      <!-- Notifications non implémentées : bouton désactivé, jamais un bouton mort. -->
-      <button class="bell" type="button" disabled title="Bientôt disponible">
-        <img src="/icons/bell.svg" alt="" width="13" height="17">
-        <span class="sr-only">Notifications (bientôt disponible)</span>
-      </button>
+
 
       <div class="chip">
         <span class="chip__avatar" aria-hidden="true">{{ player.initials }}</span>

@@ -41,13 +41,6 @@ describe('HubNav', () => {
     expect(shop.element.tagName).not.toBe('A')
   })
 
-  it('désactive le bouton notifications avec un nom accessible', () => {
-    const wrapper = mount(HubNav, { global, props: { player } })
-    const bell = wrapper.find('button')
-
-    expect(bell.attributes('disabled')).toBeDefined()
-    expect(bell.text()).toContain('Notifications (bientôt disponible)')
-  })
 
   it("restitue la barre d'XP comme progressbar (nom, valeur, bornes)", () => {
     const wrapper = mount(HubNav, { global, props: { player } })
