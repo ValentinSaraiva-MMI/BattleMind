@@ -28,3 +28,6 @@ logs
 
 # docs 
 docs
+
+#supabase cli
+supabase/.temp/
