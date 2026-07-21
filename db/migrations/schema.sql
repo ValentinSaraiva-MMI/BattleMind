@@ -119,7 +119,8 @@ declare
 begin
   -- 1. Trouver le lobby par son code (security definer => outrepasse la RLS de lecture)
   select * into v_lobby from public.lobbies
-  where code = p_code and status = 'waiting';
+  where code = p_code and status = 'waiting'
+  for update;
 
   if v_lobby.id is null then
     raise exception 'Lobby introuvable ou déjà lancé';
@@ -419,3 +420,151 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT REFERENCES
 
 
 
+create table public.game_rounds (
+  id           uuid primary key default gen_random_uuid(),
+  lobby_id     uuid not null references public.lobbies(id) on delete cascade,
+  question_id  uuid not null references public.questions(id),
+  round_number int  not null check (round_number between 1 and 10),
+  started_at   timestamptz not null default now(),
+  status       text not null default 'active' check (status in ('active','finished')),
+  unique (lobby_id, round_number)   -- garantit l'idempotence : un seul round N par partie
+);
+
+alter table public.game_rounds enable row level security;
+
+
+create table public.player_answers (
+  id           uuid primary key default gen_random_uuid(),
+  lobby_id     uuid not null references public.lobbies(id) on delete cascade,
+  round_id     uuid not null references public.game_rounds(id) on delete cascade,
+  user_id      uuid not null references public.profiles(id) on delete cascade,
+  selected_key text not null,
+  is_correct   boolean not null,
+  answered_at  timestamptz not null default now(),
+  unique (round_id, user_id)   -- un joueur ne répond qu'une fois par question
+);
+
+alter table public.player_answers enable row level security;
+
+-- Les membres du lobby voient les rounds de leur partie.
+create policy "read rounds of my lobby"
+  on public.game_rounds for select
+  to authenticated
+  using (public.is_lobby_member(lobby_id));
+
+-- Les membres voient les réponses de leur partie (pour le classement live).
+create policy "read answers of my lobby"
+  on public.player_answers for select
+  to authenticated
+  using (public.is_lobby_member(lobby_id));
+
+grant select on public.game_rounds to authenticated;
+grant select on public.player_answers to authenticated;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'game_rounds'
+  ) then
+    alter publication supabase_realtime add table public.game_rounds;
+  end if;
+end $$;
+
+create or replace function public.start_game(p_lobby_id uuid)
+returns uuid                        -- renvoie l'id du 1er round créé
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_lobby     public.lobbies;
+  v_question  uuid;
+  v_round_id  uuid;
+begin
+  -- 1. Charger le lobby et vérifier que l'appelant est bien l'hôte
+  select * into v_lobby from public.lobbies where id = p_lobby_id;
+  if v_lobby.id is null then
+    raise exception 'Lobby introuvable';
+  end if;
+  if v_lobby.host_id <> auth.uid() then
+    raise exception 'Seul l''hôte peut lancer la partie';
+  end if;
+  if v_lobby.status <> 'waiting' then
+    raise exception 'La partie a déjà démarré';
+  end if;
+
+  -- 2. Passer le lobby en "in_progress"
+  update public.lobbies set status = 'in_progress' where id = p_lobby_id;
+
+  -- 3. Tirer une première question au hasard dans le thème du lobby
+  select id into v_question
+  from public.questions
+  where category = v_lobby.category
+  order by random()
+  limit 1;
+
+  if v_question is null then
+    raise exception 'Aucune question disponible pour ce thème';
+  end if;
+
+  -- 4. Créer le round 1
+  insert into public.game_rounds (lobby_id, question_id, round_number, started_at)
+  values (p_lobby_id, v_question, 1, now())
+  returning id into v_round_id;
+
+  return v_round_id;
+end;
+$$;
+
+grant execute on function public.start_game(uuid) to authenticated;
+
+
+create or replace function public.next_round(p_lobby_id uuid)
+returns jsonb
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_lobby        public.lobbies;
+  v_current_num  int;
+  v_question     uuid;
+  v_round_id     uuid;
+begin
+  select * into v_lobby from public.lobbies where id = p_lobby_id;
+  if v_lobby.id is null then
+    raise exception 'Lobby introuvable';
+  end if;
+
+  -- AJOUT : seul l'hôte fait avancer la partie (métronome)
+  if v_lobby.host_id <> auth.uid() then
+    raise exception 'Seul l''hôte peut passer au round suivant';
+  end if;
+
+  select coalesce(max(round_number), 0) into v_current_num
+  from public.game_rounds where lobby_id = p_lobby_id;
+
+  update public.game_rounds set status = 'finished'
+  where lobby_id = p_lobby_id and round_number = v_current_num;
+
+  if v_current_num >= 10 then
+    update public.lobbies set status = 'finished' where id = p_lobby_id;
+    return jsonb_build_object('finished', true);
+  end if;
+
+  select id into v_question from public.questions
+  where category = v_lobby.category
+    and id not in (select question_id from public.game_rounds where lobby_id = p_lobby_id)
+  order by random() limit 1;
+
+  if v_question is null then
+    select id into v_question from public.questions
+    where category = v_lobby.category order by random() limit 1;
+  end if;
+
+  insert into public.game_rounds (lobby_id, question_id, round_number, started_at)
+  values (p_lobby_id, v_question, v_current_num + 1, now())
+  returning id into v_round_id;
+
+  return jsonb_build_object('finished', false, 'round_id', v_round_id, 'round_number', v_current_num + 1);
+end;
+$$;
