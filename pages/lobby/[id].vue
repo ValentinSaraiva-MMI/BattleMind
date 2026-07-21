@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { RealtimeChannel } from '@supabase/supabase-js'
 import { useLobby } from '~/composables/useLobby'
 import { formatLobbyCode } from '~/utils/lobby'
 
@@ -13,7 +14,9 @@ const {
   resolveUserId,
   fetchLobby,
   leaveLobby,
-  startLobby
+  startLobby,
+  subscribeToLobbyPlayers,
+  unsubscribeLobbyPlayers
 } = useLobby()
 
 useHead({ title: 'Salon — Battlemind' })
@@ -37,11 +40,29 @@ const connectedLabel = computed(() =>
   lobby.value ? `${lobby.value.players.length} / ${lobby.value.maxPlayers} connectés` : ''
 )
 
-// Les données se chargent au montage. La synchronisation temps réel (Realtime)
-// arrivera dans un commit suivant.
+// Canal Realtime du salon, conservé pour être fermé au démontage.
+let playersChannel: RealtimeChannel | null = null
+
+// Les données se chargent au montage, puis le canal Realtime prend le relais :
+// la grille et le compteur suivent les arrivées et départs sans rechargement.
 onMounted(async () => {
   userId.value = await resolveUserId()
   await fetchLobby(lobbyId.value)
+
+  // Chaque INSERT/DELETE sur lobby_players de ce salon déclenche un refetch
+  // silencieux (sans flash de « Chargement… »), ce qui reconstruit la liste.
+  playersChannel = subscribeToLobbyPlayers(lobbyId.value, () => {
+    fetchLobby(lobbyId.value, { silent: true })
+  })
+})
+
+// Sans ce nettoyage, chaque passage dans un salon laisserait une connexion
+// Realtime ouverte — fuite de canaux côté Supabase.
+onUnmounted(() => {
+  if (playersChannel) {
+    unsubscribeLobbyPlayers(playersChannel)
+    playersChannel = null
+  }
 })
 
 // --- Copie du code -------------------------------------------------------

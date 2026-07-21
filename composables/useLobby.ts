@@ -1,3 +1,4 @@
+import type { RealtimeChannel } from '@supabase/supabase-js'
 import { levelFromXp } from '~/composables/useProgression'
 import {
   categoryLabel,
@@ -352,10 +353,21 @@ export function useLobby() {
     }
   }
 
-  /** Charge un salon et sa table de joueurs (page salon d'attente). */
-  const fetchLobby = async (lobbyId: string): Promise<void> => {
-    lobbyStatus.value = 'pending'
-    errorMessage.value = ''
+  /**
+   * Charge un salon et sa table de joueurs (page salon d'attente).
+   *
+   * `silent` sert au rafraîchissement Realtime : il n'affiche pas « Chargement… »
+   * (ce qui démonterait le salon à chaque arrivée ou départ) et, sur une erreur
+   * transitoire, conserve le dernier état connu plutôt que de vider la vue.
+   */
+  const fetchLobby = async (
+    lobbyId: string,
+    options: { silent?: boolean } = {}
+  ): Promise<void> => {
+    if (!options.silent) {
+      lobbyStatus.value = 'pending'
+      errorMessage.value = ''
+    }
 
     try {
       const { data, error } = await supabase
@@ -365,6 +377,7 @@ export function useLobby() {
         .single()
 
       if (error || !data) {
+        if (options.silent) return
         lobby.value = null
         errorMessage.value = LOBBY_NOT_FOUND_ERROR
         lobbyStatus.value = 'error'
@@ -422,10 +435,46 @@ export function useLobby() {
       }
       lobbyStatus.value = 'loaded'
     } catch {
+      if (options.silent) return
       lobby.value = null
       errorMessage.value = LOBBY_NOT_FOUND_ERROR
       lobbyStatus.value = 'error'
     }
+  }
+
+  /**
+   * Souscrit aux arrivées et départs de joueurs d'un salon (Supabase Realtime).
+   *
+   * Le filtre `lobby_id=eq.<id>` restreint le flux au salon courant. À chaque
+   * changement sur `lobby_players`, `onChange` est appelé : la page relit alors
+   * la liste (refetch silencieux) plutôt que d'appliquer le delta, car le payload
+   * Realtime ne porte ni le pseudo ni l'XP du profil joint — qu'il faut de toute
+   * façon relire pour afficher un joueur.
+   *
+   * Renvoie le canal ; l'appelant DOIT le passer à `unsubscribeLobbyPlayers` au
+   * démontage, sinon la connexion Realtime reste ouverte (fuite de canaux).
+   */
+  const subscribeToLobbyPlayers = (
+    lobbyId: string,
+    onChange: () => void
+  ): RealtimeChannel =>
+    supabase
+      .channel(`lobby-players:${lobbyId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'lobby_players',
+          filter: `lobby_id=eq.${lobbyId}`
+        },
+        () => onChange()
+      )
+      .subscribe()
+
+  /** Ferme le canal Realtime et libère la connexion côté Supabase. */
+  const unsubscribeLobbyPlayers = (channel: RealtimeChannel): void => {
+    supabase.removeChannel(channel)
   }
 
   return {
@@ -443,6 +492,8 @@ export function useLobby() {
     leaveLobby,
     startLobby,
     fetchPublicLobbies,
-    fetchLobby
+    fetchLobby,
+    subscribeToLobbyPlayers,
+    unsubscribeLobbyPlayers
   }
 }
