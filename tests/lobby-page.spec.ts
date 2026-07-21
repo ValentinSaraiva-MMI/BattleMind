@@ -119,14 +119,6 @@ describe('Page salon — contenu', () => {
     expect(wrapper.findAll('.slot')).toHaveLength(4)
   })
 
-  it('double le statut de chaque joueur d’un texte, jamais de la seule couleur', async () => {
-    const wrapper = mountPage()
-    await flushPromises()
-
-    const statuses = wrapper.findAll('.player__status').map(node => node.text())
-    expect(statuses[0]).toContain('Prêt')
-    expect(statuses[1]).toContain('Synchronisation')
-  })
 
   it('identifie l’hôte par un badge texte, pas seulement par la bordure', async () => {
     const wrapper = mountPage()

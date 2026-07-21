@@ -172,15 +172,7 @@ const onStart = async () => {
                 <span class="player__pseudo">{{ player.pseudo }}</span>
                 <span class="player__level">Niv. {{ player.level }}</span>
               </p>
-              <!-- Statut doublé d'un texte : jamais porté par la seule couleur. -->
-              <p v-if="player.isReady" class="player__status player__status--ready">
-                <span class="player__dot" aria-hidden="true" />
-                Prêt
-              </p>
-              <p v-else class="player__status">
-                <img src="/icons/sync.svg" alt="" width="8" height="8">
-                Synchronisation…
-              </p>
+
             </li>
 
             <li v-for="slot in emptySlots" :key="`empty-${slot}`" class="slot">
