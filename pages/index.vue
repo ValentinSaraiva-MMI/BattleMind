@@ -237,7 +237,8 @@ const onJoinLobby = async (id: string) => {
 
 .lobbies__grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(290px, 100%), 290px));
+  justify-content: center;
   gap: 24px;
   margin: 0;
   padding: 0;

@@ -64,12 +64,16 @@ const statusLabel = computed(() => (props.lobby.status === 'full' ? 'Full' : 'Wa
 .card {
   display: flex;
   flex-direction: column;
+  justify-content: space-between;
   gap: 16px;
-  height: 100%;
+  width: 100%;
+  min-width: 0;
+  aspect-ratio: 29 / 19;
   padding: 21px;
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius);
   background-color: var(--color-surface-overlay);
+  overflow: hidden;
 }
 
 .card__header {
@@ -81,12 +85,14 @@ const statusLabel = computed(() => (props.lobby.status === 'full' ? 'Full' : 'Wa
 
 .card__titles {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 3px;
   min-width: 0;
 }
 
 .card__category {
+  overflow: hidden;
   margin: 0;
   color: var(--color-accent);
   font-family: var(--font-display);
@@ -94,20 +100,26 @@ const statusLabel = computed(() => (props.lobby.status === 'full' ? 'Full' : 'Wa
   font-weight: var(--weight-regular);
   letter-spacing: 1px;
   line-height: 15px;
+  text-overflow: ellipsis;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .card__name {
+  overflow: hidden;
   margin: 0;
   color: var(--color-text);
   font-family: var(--font-body);
   font-size: var(--text-xl);
   font-weight: var(--weight-semibold);
   line-height: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 6px;
   margin: 0;
@@ -167,7 +179,6 @@ const statusLabel = computed(() => (props.lobby.status === 'full' ? 'Full' : 'Wa
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-top: 8px;
   padding-top: 13px;
   border-top: 1px solid var(--color-border-subtle);
 }
