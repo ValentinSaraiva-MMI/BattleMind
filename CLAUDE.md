@@ -123,6 +123,5 @@ pages/                   routes (routing par fichiers)
 public/icons/            SVG
 tests/                   specs Vitest
 db/migrations/           historique SQL versionné
-docs/bc02/               documentation de certification (par compétence)
 .github/workflows/       CI
 ```

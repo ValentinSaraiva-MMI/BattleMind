@@ -57,6 +57,14 @@ let rpc: ReturnType<typeof vi.fn>
 let getSession: ReturnType<typeof vi.fn>
 let userRef: Ref<typeof SESSION_CLAIMS | null>
 
+// Mock du canal Realtime : capture la config du filtre et le callback, espionne
+// l'ouverture et la fermeture du canal.
+let channelObj: Record<string, ReturnType<typeof vi.fn>>
+let channelSpy: ReturnType<typeof vi.fn>
+let removeChannel: ReturnType<typeof vi.fn>
+let realtimeConfig: unknown
+let realtimeHandler: ((payload: unknown) => void) | null
+
 beforeEach(() => {
   lobbiesTable = makeTable()
   playersTable = makeTable()
@@ -64,9 +72,27 @@ beforeEach(() => {
   getSession = vi.fn().mockResolvedValue({ data: { session: { user: { id: 'user-1' } } } })
   userRef = ref<typeof SESSION_CLAIMS | null>(SESSION_CLAIMS)
 
+  realtimeConfig = null
+  realtimeHandler = null
+  channelObj = {} as Record<string, ReturnType<typeof vi.fn>>
+  channelObj.on = vi.fn((_type: string, config: unknown, handler: (payload: unknown) => void) => {
+    realtimeConfig = config
+    realtimeHandler = handler
+    return channelObj
+  })
+  channelObj.subscribe = vi.fn(() => channelObj)
+  channelSpy = vi.fn(() => channelObj)
+  removeChannel = vi.fn()
+
   const from = vi.fn((table: string) => (table === 'lobbies' ? lobbiesTable : playersTable))
 
-  vi.stubGlobal('useSupabaseClient', () => ({ from, rpc, auth: { getSession } }))
+  vi.stubGlobal('useSupabaseClient', () => ({
+    from,
+    rpc,
+    auth: { getSession },
+    channel: channelSpy,
+    removeChannel
+  }))
   vi.stubGlobal('useSupabaseUser', () => userRef)
 })
 
@@ -417,5 +443,72 @@ describe('useLobby — fetchLobby', () => {
     expect(api.lobby.value).toBeNull()
     expect(api.lobbyStatus.value).toBe('error')
     expect(api.errorMessage.value).toBe(LOBBY_NOT_FOUND_ERROR)
+  })
+
+  it('ne repasse pas en pending lors d’un rafraîchissement silencieux (Realtime)', async () => {
+    lobbiesTable.result = { data: ROW, error: null }
+    const api = await setup()
+    await api.fetchLobby('lobby-1')
+    expect(api.lobbyStatus.value).toBe('loaded')
+
+    const refresh = api.fetchLobby('lobby-1', { silent: true })
+    // Le rafraîchissement ne démonte pas le salon sous les yeux du joueur.
+    expect(api.lobbyStatus.value).toBe('loaded')
+    await refresh
+
+    expect(api.lobby.value!.players).toHaveLength(2)
+  })
+
+  it('conserve le dernier salon connu si un rafraîchissement silencieux échoue', async () => {
+    lobbiesTable.result = { data: ROW, error: null }
+    const api = await setup()
+    await api.fetchLobby('lobby-1')
+    const snapshot = api.lobby.value
+
+    lobbiesTable.result = { data: null, error: { code: 'PGRST116' } }
+    await api.fetchLobby('lobby-1', { silent: true })
+
+    // Erreur transitoire : la vue courante n'est ni vidée ni passée en erreur.
+    expect(api.lobby.value).toBe(snapshot)
+    expect(api.lobbyStatus.value).toBe('loaded')
+  })
+})
+
+describe('useLobby — synchro temps réel (lobby_players)', () => {
+  it('ouvre un canal filtré sur lobby_players du salon et renvoie le canal', async () => {
+    const api = await setup()
+
+    const channel = api.subscribeToLobbyPlayers('lobby-1', () => {})
+
+    expect(channelSpy).toHaveBeenCalledWith('lobby-players:lobby-1')
+    expect(realtimeConfig).toEqual({
+      event: '*',
+      schema: 'public',
+      table: 'lobby_players',
+      filter: 'lobby_id=eq.lobby-1'
+    })
+    expect(channelObj.subscribe).toHaveBeenCalled()
+    // Le canal est renvoyé pour être fermé au démontage.
+    expect(channel).toBe(channelObj)
+  })
+
+  it('déclenche le rappel à chaque changement Realtime', async () => {
+    const api = await setup()
+    const onChange = vi.fn()
+
+    api.subscribeToLobbyPlayers('lobby-1', onChange)
+    realtimeHandler!({ eventType: 'INSERT' })
+    realtimeHandler!({ eventType: 'DELETE' })
+
+    expect(onChange).toHaveBeenCalledTimes(2)
+  })
+
+  it('ferme le canal pour libérer la connexion Realtime', async () => {
+    const api = await setup()
+    const channel = api.subscribeToLobbyPlayers('lobby-1', () => {})
+
+    api.unsubscribeLobbyPlayers(channel)
+
+    expect(removeChannel).toHaveBeenCalledWith(channelObj)
   })
 })

@@ -26,6 +26,14 @@ let navigateToMock: ReturnType<typeof vi.fn>
 let writeText: ReturnType<typeof vi.fn>
 let currentUser: string | null
 
+// Mock du canal Realtime : on capture la config du filtre et le callback pour
+// pouvoir simuler une arrivée/un départ, et on espionne la fermeture du canal.
+let channelObj: Record<string, ReturnType<typeof vi.fn>>
+let channelSpy: ReturnType<typeof vi.fn>
+let removeChannel: ReturnType<typeof vi.fn>
+let realtimeConfig: unknown
+let realtimeHandler: ((payload: unknown) => void) | null
+
 const makeTable = () => {
   const built = { result: { data: LOBBY, error: null } } as never as Record<string, ReturnType<typeof vi.fn>> & {
     result: unknown
@@ -54,9 +62,23 @@ beforeEach(() => {
   writeText = vi.fn().mockResolvedValue(undefined)
   currentUser = 'user-1'
 
+  realtimeConfig = null
+  realtimeHandler = null
+  channelObj = {} as Record<string, ReturnType<typeof vi.fn>>
+  channelObj.on = vi.fn((_type: string, config: unknown, handler: (payload: unknown) => void) => {
+    realtimeConfig = config
+    realtimeHandler = handler
+    return channelObj
+  })
+  channelObj.subscribe = vi.fn(() => channelObj)
+  channelSpy = vi.fn(() => channelObj)
+  removeChannel = vi.fn()
+
   vi.stubGlobal('useSupabaseClient', () => ({
     from,
-    auth: { getSession: vi.fn().mockResolvedValue({ data: { session: null } }) }
+    auth: { getSession: vi.fn().mockResolvedValue({ data: { session: null } }) },
+    channel: channelSpy,
+    removeChannel
   }))
   vi.stubGlobal('useSupabaseUser', () => ref(currentUser ? { sub: currentUser } : null))
   vi.stubGlobal('useRoute', () => ({ params: { id: 'lobby-1' } }))
@@ -221,5 +243,79 @@ describe('Page salon — actions', () => {
     const soon = wrapper.find('.soon')
     expect(soon.find('button').attributes('disabled')).toBeDefined()
     expect(soon.text()).toContain('Bientôt disponible')
+  })
+})
+
+describe('Page salon — synchro temps réel', () => {
+  it('souscrit aux changements de lobby_players filtrés sur le salon courant', async () => {
+    mountPage()
+    await flushPromises()
+
+    expect(channelSpy).toHaveBeenCalled()
+    expect(realtimeConfig).toMatchObject({
+      event: '*',
+      schema: 'public',
+      table: 'lobby_players',
+      filter: 'lobby_id=eq.lobby-1'
+    })
+  })
+
+  it('met à jour la grille et le compteur quand un joueur rejoint, sans rechargement', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.findAll('.player')).toHaveLength(2)
+    expect(wrapper.text()).toContain('2 / 6 connectés')
+
+    // Un troisième joueur arrive : la base renverra désormais trois lignes.
+    table.result = {
+      data: {
+        ...LOBBY,
+        lobby_players: [
+          ...LOBBY.lobby_players,
+          { id: 'lp-3', user_id: 'user-3', is_host: false, is_ready: false, profile: { pseudo: 'NovaByte', xp: 1200 } }
+        ]
+      },
+      error: null
+    }
+
+    // L'événement Realtime déclenche le refetch silencieux.
+    realtimeHandler!({ eventType: 'INSERT' })
+    await flushPromises()
+
+    expect(wrapper.findAll('.player')).toHaveLength(3)
+    expect(wrapper.text()).toContain('NovaByte')
+    expect(wrapper.text()).toContain('3 / 6 connectés')
+    // La vue n'est jamais repassée par l'état « Chargement… ».
+    expect(wrapper.text()).not.toContain('Chargement du salon')
+  })
+
+  it('reflète un départ en libérant une place dans la grille', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.findAll('.slot')).toHaveLength(4)
+
+    // Il ne reste que l'hôte : cinq places redeviennent libres.
+    table.result = {
+      data: { ...LOBBY, lobby_players: [LOBBY.lobby_players[0]] },
+      error: null
+    }
+
+    realtimeHandler!({ eventType: 'DELETE' })
+    await flushPromises()
+
+    expect(wrapper.findAll('.player')).toHaveLength(1)
+    expect(wrapper.text()).toContain('1 / 6 connectés')
+    expect(wrapper.findAll('.slot')).toHaveLength(5)
+  })
+
+  it('ferme le canal Realtime au démontage pour ne pas fuiter de connexion', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    wrapper.unmount()
+
+    expect(removeChannel).toHaveBeenCalledWith(channelObj)
   })
 })
