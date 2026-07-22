@@ -196,6 +196,7 @@ CREATE TABLE IF NOT EXISTS "public"."lobbies" (
     "max_players" integer DEFAULT 6 NOT NULL,
     "powerups_enabled" boolean DEFAULT true NOT NULL,
     "status" "public"."lobby_status" DEFAULT 'waiting'::"public"."lobby_status" NOT NULL,
+    "xp_credited" boolean DEFAULT false NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     CONSTRAINT "lobbies_max_players_check" CHECK ((("max_players" >= 2) AND ("max_players" <= 6)))
 );
@@ -636,3 +637,181 @@ begin
     alter publication supabase_realtime add table public.lobbies;
   end if;
 end $$;
+
+
+-- finish_game : crédite l'XP UNIQUEMENT (score × 10), idempotent via `xp_credited`.
+-- La réinitialisation du lobby appartient désormais à `reset_lobby` (rejeu), pour
+-- que l'écran de résultats puisse lire les scores intacts (voir migration
+-- db/migrations/2026-07-22_finish_game_reset_lobby.sql).
+create or replace function public.finish_game(p_lobby_id uuid)
+returns void
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_lobby public.lobbies;
+begin
+  select * into v_lobby from public.lobbies where id = p_lobby_id;
+  if v_lobby.id is null then
+    raise exception 'Lobby introuvable';
+  end if;
+  if v_lobby.host_id <> auth.uid() then
+    raise exception 'Seul l''hôte peut clôturer la partie';
+  end if;
+  if v_lobby.status <> 'finished' then
+    raise exception 'La partie n''est pas terminée';
+  end if;
+
+  -- Garde-fou anti double-crédit : si l'XP a déjà été créditée, ne rien refaire.
+  if v_lobby.xp_credited then
+    return;
+  end if;
+
+  -- Créditer l'XP (score réel × 10) + games_played à chaque joueur.
+  update public.profiles p
+  set xp = xp + (lp.score * 10),
+      games_played = games_played + 1
+  from public.lobby_players lp
+  where lp.lobby_id = p_lobby_id and lp.user_id = p.id;
+
+  -- Créditer une victoire au meilleur score (si > 0).
+  update public.profiles p
+  set games_won = games_won + 1
+  from public.lobby_players lp
+  where lp.lobby_id = p_lobby_id
+    and lp.user_id = p.id
+    and lp.score = (select max(score) from public.lobby_players where lobby_id = p_lobby_id)
+    and lp.score > 0;
+
+  -- Marquer comme crédité (empêche le double-crédit si rappelée).
+  update public.lobbies set xp_credited = true where id = p_lobby_id;
+end;
+$$;
+
+grant execute on function public.finish_game(uuid) to authenticated;
+
+
+-- reset_lobby : réinitialise le lobby pour le rejeu (bouton « Rejouer », hôte seul).
+create or replace function public.reset_lobby(p_lobby_id uuid)
+returns void
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_lobby public.lobbies;
+begin
+  select * into v_lobby from public.lobbies where id = p_lobby_id;
+  if v_lobby.id is null then
+    raise exception 'Lobby introuvable';
+  end if;
+  if v_lobby.host_id <> auth.uid() then
+    raise exception 'Seul l''hôte peut relancer le salon';
+  end if;
+
+  -- Nettoyer les données de la partie précédente.
+  delete from public.player_answers where lobby_id = p_lobby_id;
+  delete from public.game_rounds   where lobby_id = p_lobby_id;
+
+  -- Réinitialiser scores/séries et remettre le lobby en attente.
+  update public.lobby_players set score = 0, streak = 0 where lobby_id = p_lobby_id;
+  update public.lobbies
+    set status = 'waiting', xp_credited = false
+    where id = p_lobby_id;
+end;
+$$;
+
+grant execute on function public.reset_lobby(uuid) to authenticated;
+
+
+-- Étape 3d — fin de partie : scinder le crédit d'XP et la réinitialisation du lobby.
+--
+-- Avant, `finish_game` créditait l'XP ET réinitialisait le lobby d'un bloc, ce qui
+-- effaçait les scores avant que l'écran de résultats puisse les afficher. On sépare :
+--   - `finish_game`  : crédite l'XP (score × 10), idempotent, laisse `status = 'finished'` ;
+--   - `reset_lobby`  : remet le lobby en attente pour le rejeu (scores à 0, rounds purgés).
+--
+-- L'idempotence du crédit repose sur une nouvelle colonne `lobbies.xp_credited`.
+
+-- 1. Drapeau anti double-crédit (idempotence de finish_game).
+alter table public.lobbies
+  add column if not exists xp_credited boolean not null default false;
+
+-- 2. finish_game : crédite l'XP UNIQUEMENT (plus de réinitialisation).
+create or replace function public.finish_game(p_lobby_id uuid)
+returns void
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_lobby public.lobbies;
+begin
+  select * into v_lobby from public.lobbies where id = p_lobby_id;
+  if v_lobby.id is null then
+    raise exception 'Lobby introuvable';
+  end if;
+  if v_lobby.host_id <> auth.uid() then
+    raise exception 'Seul l''hôte peut clôturer la partie';
+  end if;
+  if v_lobby.status <> 'finished' then
+    raise exception 'La partie n''est pas terminée';
+  end if;
+
+  -- Garde-fou anti double-crédit : si l'XP a déjà été créditée pour cette partie,
+  -- ne rien refaire (idempotent).
+  if v_lobby.xp_credited then
+    return;
+  end if;
+
+  -- Créditer l'XP (score réel × 10) + games_played à chaque joueur.
+  update public.profiles p
+  set xp = xp + (lp.score * 10),
+      games_played = games_played + 1
+  from public.lobby_players lp
+  where lp.lobby_id = p_lobby_id and lp.user_id = p.id;
+
+  -- Créditer une victoire au meilleur score (si > 0).
+  update public.profiles p
+  set games_won = games_won + 1
+  from public.lobby_players lp
+  where lp.lobby_id = p_lobby_id
+    and lp.user_id = p.id
+    and lp.score = (select max(score) from public.lobby_players where lobby_id = p_lobby_id)
+    and lp.score > 0;
+
+  -- Marquer comme crédité (empêche le double-crédit si rappelée).
+  update public.lobbies set xp_credited = true where id = p_lobby_id;
+end;
+$$;
+
+grant execute on function public.finish_game(uuid) to authenticated;
+
+-- 3. reset_lobby : réinitialise le lobby pour le rejeu (bouton « Rejouer », hôte).
+create or replace function public.reset_lobby(p_lobby_id uuid)
+returns void
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_lobby public.lobbies;
+begin
+  select * into v_lobby from public.lobbies where id = p_lobby_id;
+  if v_lobby.id is null then
+    raise exception 'Lobby introuvable';
+  end if;
+  if v_lobby.host_id <> auth.uid() then
+    raise exception 'Seul l''hôte peut relancer le salon';
+  end if;
+
+  -- Nettoyer les données de la partie précédente.
+  delete from public.player_answers where lobby_id = p_lobby_id;
+  delete from public.game_rounds   where lobby_id = p_lobby_id;
+
+  -- Réinitialiser scores/séries et remettre le lobby en attente.
+  update public.lobby_players set score = 0, streak = 0 where lobby_id = p_lobby_id;
+  update public.lobbies
+    set status = 'waiting', xp_credited = false
+    where id = p_lobby_id;
+end;
+$$;
+
+grant execute on function public.reset_lobby(uuid) to authenticated;

@@ -21,9 +21,12 @@ export interface RoundQuestion {
 
 /** État de la partie côté serveur, pour situer le joueur (hôte ? déjà terminée ?). */
 export interface GameMeta {
-  /** Hôte du lobby : seul lui fait avancer la partie (métronome). */
+  /** Hôte du lobby : seul lui fait avancer la partie (métronome) et la clôture. */
   hostId: string | null
   status: 'waiting' | 'in_progress' | 'finished'
+  /** Nom du salon et thème, pour le sous-titre de l'écran de résultats. */
+  name: string
+  categoryLabel: string
 }
 
 /** Résultat de `next_round` : soit la partie continue (round suivant), soit elle se termine. */
@@ -147,14 +150,24 @@ export function useGame() {
     try {
       const { data, error } = await supabase
         .from('lobbies')
-        .select('host_id, status')
+        .select('host_id, status, name, category')
         .eq('id', lobbyId)
         .maybeSingle()
 
-      const row = data as { host_id: string | null, status: GameMeta['status'] } | null
+      const row = data as {
+        host_id: string | null
+        status: GameMeta['status']
+        name: string
+        category: string
+      } | null
       if (error || !row) return null
 
-      return { hostId: row.host_id, status: row.status }
+      return {
+        hostId: row.host_id,
+        status: row.status,
+        name: row.name,
+        categoryLabel: categoryLabel(row.category)
+      }
     } catch {
       return null
     }
@@ -183,6 +196,37 @@ export function useGame() {
       }
     } catch {
       return null
+    }
+  }
+
+  /**
+   * Clôt la partie et crédite l'XP de tous les joueurs (HÔTE uniquement, contrôlé
+   * côté serveur). `finish_game` est IDEMPOTENT (drapeau `xp_credited`) : l'écran
+   * de résultats peut l'appeler au montage sans risque de double-crédit. Il NE
+   * réinitialise PAS le lobby (voir `resetLobby`), donc les scores restent lisibles
+   * pour l'affichage. Renvoie `true` si l'appel a abouti.
+   */
+  const finishGame = async (lobbyId: string): Promise<boolean> => {
+    try {
+      const { error } = await supabase.rpc('finish_game', { p_lobby_id: lobbyId })
+      return !error
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Réinitialise le lobby pour le rejeu (bouton « Rejouer », HÔTE uniquement) :
+   * scores à 0, rounds purgés, `status` repassé à `waiting`. Via Realtime, tous
+   * les joueurs retournent alors au salon d'attente. Renvoie `true` si l'appel a
+   * abouti.
+   */
+  const resetLobby = async (lobbyId: string): Promise<boolean> => {
+    try {
+      const { error } = await supabase.rpc('reset_lobby', { p_lobby_id: lobbyId })
+      return !error
+    } catch {
+      return false
     }
   }
 
@@ -362,6 +406,8 @@ export function useGame() {
     fetchGameMeta,
     fetchActiveRound,
     nextRound,
+    finishGame,
+    resetLobby,
     fetchQuestion,
     fetchLeaderboard,
     submitAnswer,

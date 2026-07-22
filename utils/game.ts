@@ -105,6 +105,42 @@ export const answerState = (key: string, outcome: AnswerOutcome | null): AnswerS
 }
 
 /**
+ * XP gagnée pour un score de partie : `score × 10`. Valeur DÉRIVÉE (jamais
+ * stockée telle quelle) ; le crédit réel appartient à la fonction serveur
+ * `finish_game`. Ici, c'est l'affichage du badge « +XP » sur l'écran de
+ * résultats. Robuste aux entrées incohérentes (négatif, décimal, `NaN` → 0).
+ */
+export const XP_PER_POINT = 10
+export const xpForScore = (score: number): number =>
+  Number.isFinite(score) ? Math.max(0, Math.trunc(score)) * XP_PER_POINT : 0
+
+/**
+ * Libellé de rang en français, explicite en toutes lettres (RGAA : le podium ne
+ * repose pas sur la seule position). « 1er », sinon « Ne ».
+ */
+export const ordinalFr = (rank: number): string =>
+  Math.trunc(rank) === 1 ? '1er' : `${Math.trunc(rank)}e`
+
+/**
+ * Sépare le classement final en podium et reste, pour l'écran de résultats.
+ *
+ * `podium` est renvoyé dans l'ORDRE D'AFFICHAGE de la maquette — 2e, 1er, 3e
+ * (le vainqueur au centre) — en omettant les places manquantes (parties à 1 ou
+ * 2 joueurs). Chaque joueur garde son `rank`, ce qui permet de repérer le
+ * vainqueur (`rank === 1`) et d'étiqueter sa place. `rest` = les joueurs classés
+ * 4e et au-delà, dans l'ordre. Fonction pure, testable sur des listes fixes.
+ */
+export const splitStandings = (
+  ranked: RankedPlayer[]
+): { podium: RankedPlayer[], rest: RankedPlayer[] } => {
+  const top3 = ranked.slice(0, 3)
+  const podium = [top3[1], top3[0], top3[2]].filter(
+    (player): player is RankedPlayer => Boolean(player)
+  )
+  return { podium, rest: ranked.slice(3) }
+}
+
+/**
  * Progression de la partie, façon maquette : « 08/10 ». Le numéro courant est
  * complété à la largeur du total (2 chiffres pour 10 questions), et borné dans
  * [1, total] pour ne jamais afficher « 00/10 » ni « 11/10 » sur une donnée

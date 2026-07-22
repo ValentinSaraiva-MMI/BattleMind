@@ -40,8 +40,11 @@ const {
 // Le suivi du statut du lobby (fin de partie) vit dans useLobby, réutilisé ici.
 const { subscribeToLobbyStatus } = useLobby()
 
-type PageStatus = 'pending' | 'loaded' | 'error' | 'finished'
+type PageStatus = 'pending' | 'loaded' | 'error'
 const status = ref<PageStatus>('pending')
+
+// Fin de partie : tous les clients basculent sur l'écran de résultats (3d).
+const goToResults = () => navigateTo(`/game/${lobbyId.value}/results`)
 
 const question = ref<RoundQuestion | null>(null)
 const leaderboard = ref<RankedPlayer[]>([])
@@ -168,7 +171,8 @@ const onTimeUp = async () => {
     answerError.value = NEXT_ROUND_ERROR
     return
   }
-  if (result.finished) status.value = 'finished'
+  // Après le round 10 : la partie est close, direction l'écran de résultats.
+  if (result.finished) await goToResults()
 }
 
 // Canaux Realtime de la partie (synchro 3c), fermés au démontage.
@@ -182,9 +186,9 @@ onMounted(async () => {
   const meta = await fetchGameMeta(lobbyId.value)
   hostId.value = meta?.hostId ?? null
 
-  // Partie déjà finie (rechargement après le dernier round) : écran de fin direct.
+  // Partie déjà finie (rechargement après le dernier round) : direction les résultats.
   if (meta?.status === 'finished') {
-    status.value = 'finished'
+    await goToResults()
     return
   }
 
@@ -211,11 +215,11 @@ onMounted(async () => {
   roundsChannel = subscribeToRounds(lobbyId.value, round => void loadRound(round.id))
   // Un score change → le classement live se rafraîchit chez tout le monde.
   scoresChannel = subscribeToScores(lobbyId.value, () => void refreshLeaderboard())
-  // L'hôte a terminé la partie (status → finished) → écran final pour tous.
+  // L'hôte a terminé la partie (status → finished) → écran de résultats pour tous.
   statusChannel = subscribeToLobbyStatus(lobbyId.value, s => {
     if (s === 'finished') {
       stopTicker()
-      status.value = 'finished'
+      goToResults()
     }
   })
 })
@@ -252,16 +256,6 @@ const onAnswer = async (key: string) => {
     <template v-if="status === 'pending'">
       <h1 class="sr-only">Partie</h1>
       <p class="state" role="status">Chargement de la question…</p>
-    </template>
-
-    <template v-else-if="status === 'finished'">
-      <section class="over">
-        <h1 class="over__title">Partie terminée</h1>
-        <p class="over__text">
-          Les 10 questions sont passées. L’écran de résultats complet arrive bientôt.
-        </p>
-        <NuxtLink class="button button--ghost" :to="`/lobby/${lobbyId}`">Retour au salon</NuxtLink>
-      </section>
     </template>
 
     <template v-else-if="status === 'error' || !question">
@@ -712,37 +706,6 @@ const onAnswer = async (key: string) => {
   align-self: center;
   margin-top: auto;
   opacity: 0.85;
-}
-
-/* --- Écran de fin (placeholder ; résultats complets = 3d) --- */
-
-.over {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-  padding: 42px;
-  text-align: center;
-}
-
-.over__title {
-  margin: 0;
-  color: var(--color-text);
-  font-family: var(--font-display);
-  font-size: var(--text-3xl);
-  font-weight: var(--weight-bold);
-  line-height: normal;
-}
-
-.over__text {
-  max-width: 42ch;
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: var(--text-md);
-  font-weight: var(--weight-medium);
-  line-height: 20px;
 }
 
 /* --- États & bouton retour --------------------------------------------- */

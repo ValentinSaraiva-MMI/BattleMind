@@ -6,8 +6,11 @@ import {
   formatRoundProgress,
   initialsOf,
   isLastRound,
+  ordinalFr,
   rankPlayers,
   remainingSeconds,
+  splitStandings,
+  xpForScore,
   type PlayerScore
 } from '~/utils/game'
 
@@ -183,5 +186,68 @@ describe('isLastRound', () => {
     // Numéro décimal : tronqué avant comparaison.
     expect(isLastRound(9.9)).toBe(false)
     expect(isLastRound(10.4)).toBe(true)
+  })
+})
+
+describe('xpForScore', () => {
+  it('crédite 10 XP par point', () => {
+    expect(xpForScore(6)).toBe(60)
+    expect(xpForScore(10)).toBe(100)
+    expect(xpForScore(0)).toBe(0)
+  })
+
+  it('reste à 0 sur une entrée incohérente (négatif, NaN)', () => {
+    expect(xpForScore(-3)).toBe(0)
+    expect(xpForScore(Number.NaN)).toBe(0)
+  })
+})
+
+describe('ordinalFr', () => {
+  it('donne un rang explicite en français', () => {
+    expect(ordinalFr(1)).toBe('1er')
+    expect(ordinalFr(2)).toBe('2e')
+    expect(ordinalFr(3)).toBe('3e')
+    expect(ordinalFr(10)).toBe('10e')
+  })
+})
+
+describe('splitStandings', () => {
+  const ranked = rankPlayers(
+    [
+      { userId: 'u1', pseudo: 'NeonDrifter', score: 10 },
+      { userId: 'u2', pseudo: 'CipherX', score: 9 },
+      { userId: 'u3', pseudo: 'NullPtr', score: 7 },
+      { userId: 'u4', pseudo: 'AlexTheQuizz', score: 6 },
+      { userId: 'u5', pseudo: 'ShadowNinja', score: 4 }
+    ],
+    'u4'
+  )
+
+  it('ordonne le podium 2e — 1er — 3e (vainqueur au centre), reste au-delà', () => {
+    const { podium, rest } = splitStandings(ranked)
+
+    // Ordre d'AFFICHAGE : le rang 2 à gauche, le rang 1 au centre, le rang 3 à droite.
+    expect(podium.map(p => p.pseudo)).toEqual(['CipherX', 'NeonDrifter', 'NullPtr'])
+    expect(podium.map(p => p.rank)).toEqual([2, 1, 3])
+    // Le reste garde l'ordre du classement.
+    expect(rest.map(p => p.pseudo)).toEqual(['AlexTheQuizz', 'ShadowNinja'])
+  })
+
+  it('gère une partie à deux joueurs (pas de 3e place)', () => {
+    const { podium, rest } = splitStandings(ranked.slice(0, 2))
+
+    expect(podium.map(p => p.rank)).toEqual([2, 1])
+    expect(rest).toEqual([])
+  })
+
+  it('gère un seul joueur (juste le vainqueur)', () => {
+    const { podium, rest } = splitStandings(ranked.slice(0, 1))
+
+    expect(podium.map(p => p.rank)).toEqual([1])
+    expect(rest).toEqual([])
+  })
+
+  it('tolère un classement vide', () => {
+    expect(splitStandings([])).toEqual({ podium: [], rest: [] })
   })
 })
