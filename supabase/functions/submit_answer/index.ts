@@ -7,7 +7,7 @@ Deno.serve(async (req) => {
   // --- CORS (préflight) : le navigateur envoie un OPTIONS avant le POST ---
   const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'authorization, content-type',
+    'Access-Control-Allow-Headers': 'authorization, content-type, x-client-info, apikey',
   }
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -38,8 +38,14 @@ Deno.serve(async (req) => {
     // Cette clé est un secret serveur, injecté par Supabase, jamais exposé au client.
     const admin = createClient(
       Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+      Deno.env.get('BATTLEMIND_SECRET_KEY')!,
     )
+
+     // LOG TEMPORAIRE DE DIAGNOSTIC
+    console.log('URL présente:', !!Deno.env.get('SUPABASE_URL'))
+    console.log('SERVICE_ROLE présente:', !!Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'))
+    console.log('BATTLEMIND_SECRET_KEY présente:', !!Deno.env.get('BATTLEMIND_SECRET_KEY'))
+    console.log('round_id reçu:', round_id)
 
     // --- 4. Récupérer le round (pour la question + l'heure de début) ---
     const { data: round, error: roundError } = await admin
@@ -47,6 +53,13 @@ Deno.serve(async (req) => {
       .select('id, lobby_id, question_id, started_at, status')
       .eq('id', round_id)
       .single()
+
+      
+    // LOG DIAGNOSTIC
+    console.log('round trouvé:', JSON.stringify(round))
+    console.log('erreur requête:', JSON.stringify(roundError))
+
+    
     if (roundError || !round) {
       return json({ error: 'Round introuvable' }, 404, corsHeaders)
     }

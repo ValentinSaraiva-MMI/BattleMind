@@ -66,7 +66,6 @@ export const CODE_UNKNOWN_ERROR = 'Aucune partie ouverte ne correspond à ce cod
 export const LOBBIES_ERROR = 'Impossible de charger les parties publiques.'
 export const LOBBY_NOT_FOUND_ERROR = "Cette partie n'existe plus."
 export const LEAVE_ERROR = 'Impossible de quitter le salon. Réessaie dans un instant.'
-export const START_ERROR = "Impossible de lancer l'arène. Réessaie dans un instant."
 
 // Colonnes lues pour la liste publique. `lobby_players(count)` est une agrégation
 // PostgREST : le décompte est calculé par la base, jamais dérivé ni stocké.
@@ -273,35 +272,6 @@ export function useLobby() {
   }
 
   /**
-   * Passe le salon en partie lancée. Réservé à l'hôte : la policy RLS de mise à
-   * jour de `lobbies` le vérifie côté serveur, le masquage du bouton n'est
-   * qu'un confort d'interface.
-   */
-  const startLobby = async (lobbyId: string): Promise<boolean> => {
-    pending.value = true
-    errorMessage.value = ''
-
-    try {
-      const { error } = await supabase
-        .from('lobbies')
-        .update({ status: 'in_progress' })
-        .eq('id', lobbyId)
-
-      if (error) {
-        errorMessage.value = START_ERROR
-        return false
-      }
-
-      return true
-    } catch {
-      errorMessage.value = START_ERROR
-      return false
-    } finally {
-      pending.value = false
-    }
-  }
-
-  /**
    * Recharge la liste des parties publiques en attente.
    *
    * `silent` sert au rafraîchissement automatique : il évite de repasser en
@@ -490,7 +460,6 @@ export function useLobby() {
     joinByCode,
     joinPublic,
     leaveLobby,
-    startLobby,
     fetchPublicLobbies,
     fetchLobby,
     subscribeToLobbyPlayers,

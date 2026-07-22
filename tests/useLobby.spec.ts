@@ -275,18 +275,6 @@ describe('useLobby — joinPublic et leaveLobby', () => {
   })
 })
 
-describe('useLobby — startLobby', () => {
-  it('passe le salon en partie lancée', async () => {
-    const api = await setup()
-
-    const started = await api.startLobby('lobby-1')
-
-    expect(started).toBe(true)
-    expect(lobbiesTable.update).toHaveBeenCalledWith({ status: 'in_progress' })
-    expect(lobbiesTable.eq).toHaveBeenCalledWith('id', 'lobby-1')
-  })
-})
-
 describe('useLobby — fetchPublicLobbies', () => {
   const ROWS = [
     {

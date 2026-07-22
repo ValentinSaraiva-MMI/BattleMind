@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { useLobby } from '~/composables/useLobby'
+import { useGame } from '~/composables/useGame'
 import { formatLobbyCode } from '~/utils/lobby'
 
 const route = useRoute()
@@ -14,10 +15,14 @@ const {
   resolveUserId,
   fetchLobby,
   leaveLobby,
-  startLobby,
   subscribeToLobbyPlayers,
   unsubscribeLobbyPlayers
 } = useLobby()
+
+// Le lancement appartient à la boucle de jeu : `start_game` passe le lobby en
+// partie et crée le round 1. Son état de chargement/erreur est distinct de
+// celui des actions de salon (jonction, sortie).
+const { pending: starting, errorMessage: startError, startGame } = useGame()
 
 useHead({ title: 'Salon — Battlemind' })
 
@@ -92,12 +97,12 @@ const onLeave = async () => {
 }
 
 const onStart = async () => {
-  if (pending.value) return
+  if (starting.value) return
 
-  const started = await startLobby(lobbyId.value)
-  // La boucle de jeu n'existe pas encore : on repasse par le salon, dont le
-  // statut affiche désormais « partie lancée ».
-  if (started) await fetchLobby(lobbyId.value)
+  // `start_game` renvoie l'id du round 1 : on l'emporte dans l'URL pour afficher
+  // la première question sans nouvel aller-retour côté page de jeu.
+  const roundId = await startGame(lobbyId.value)
+  if (roundId) await navigateTo(`/game/${lobbyId.value}?round=${roundId}`)
 }
 </script>
 
@@ -236,8 +241,8 @@ const onStart = async () => {
             v-if="isHost && lobby.status === 'waiting'"
             class="button button--primary"
             type="button"
-            :disabled="pending"
-            :aria-busy="pending"
+            :disabled="starting"
+            :aria-busy="starting"
             @click="onStart"
           >
             <img src="/icons/play.svg" alt="" width="10" height="12">
@@ -252,9 +257,9 @@ const onStart = async () => {
             <span class="soon__tag">Bientôt disponible</span>
           </div>
 
-          <p v-if="errorMessage" class="state state--error" role="alert">
+          <p v-if="errorMessage || startError" class="state state--error" role="alert">
             <img src="/icons/close.svg" alt="" width="12" height="12">
-            {{ errorMessage }}
+            {{ errorMessage || startError }}
           </p>
         </div>
       </aside>

@@ -22,6 +22,7 @@ const LOBBY = {
 
 let table: Record<string, ReturnType<typeof vi.fn>> & { result: unknown }
 let from: ReturnType<typeof vi.fn>
+let rpc: ReturnType<typeof vi.fn>
 let navigateToMock: ReturnType<typeof vi.fn>
 let writeText: ReturnType<typeof vi.fn>
 let currentUser: string | null
@@ -58,6 +59,8 @@ const mountPage = () =>
 beforeEach(() => {
   table = makeTable()
   from = vi.fn(() => table)
+  // `start_game` renvoie l'id du round 1 ; le lancement redirige vers la partie.
+  rpc = vi.fn().mockResolvedValue({ data: 'round-1', error: null })
   navigateToMock = vi.fn()
   writeText = vi.fn().mockResolvedValue(undefined)
   currentUser = 'user-1'
@@ -76,6 +79,7 @@ beforeEach(() => {
 
   vi.stubGlobal('useSupabaseClient', () => ({
     from,
+    rpc,
     auth: { getSession: vi.fn().mockResolvedValue({ data: { session: null } }) },
     channel: channelSpy,
     removeChannel
@@ -206,14 +210,17 @@ describe('Page salon — actions', () => {
     expect(wrapper.text()).toContain('Quitter le salon')
   })
 
-  it('passe le salon en in_progress au lancement', async () => {
+  it('lance la partie via start_game puis ouvre la page de jeu avec le round', async () => {
     const wrapper = mountPage()
     await flushPromises()
 
     await wrapper.find('.button--primary').trigger('click')
     await flushPromises()
 
-    expect(table.update).toHaveBeenCalledWith({ status: 'in_progress' })
+    // Le lancement délègue à la fonction Postgres (création du round incluse)…
+    expect(rpc).toHaveBeenCalledWith('start_game', { p_lobby_id: 'lobby-1' })
+    // … puis emporte l'id du round dans l'URL de la page de jeu.
+    expect(navigateToMock).toHaveBeenCalledWith('/game/lobby-1?round=round-1')
   })
 
   it('quitte le salon puis revient à l’accueil', async () => {
