@@ -1,3 +1,4 @@
+import type { RealtimeChannel } from '@supabase/supabase-js'
 import { categoryLabel } from '~/utils/lobby'
 import { rankPlayers, type PlayerScore, type RankedPlayer } from '~/utils/game'
 
@@ -300,6 +301,59 @@ export function useGame() {
     }
   }
 
+  /**
+   * Souscrit aux nouveaux rounds d'une partie (`game_rounds`, INSERT filtré par
+   * `lobby_id`). Quand l'hôte (métronome) crée le round suivant via `next_round`,
+   * TOUS les clients reçoivent cet INSERT et chargent la même question au même
+   * moment — c'est le cœur de la synchro 3c. `onInsert` reçoit la nouvelle ligne.
+   *
+   * Renvoie le canal ; à fermer au démontage (`unsubscribeChannel`).
+   */
+  const subscribeToRounds = (
+    lobbyId: string,
+    onInsert: (round: { id: string, round_number: number }) => void
+  ): RealtimeChannel =>
+    supabase
+      .channel(`game-rounds:${lobbyId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'game_rounds',
+          filter: `lobby_id=eq.${lobbyId}`
+        },
+        payload => onInsert(payload.new as { id: string, round_number: number })
+      )
+      .subscribe()
+
+  /**
+   * Souscrit aux changements de score du lobby (`lobby_players`, filtré par
+   * `lobby_id`) pour rafraîchir le classement live. Le payload Realtime ne porte
+   * pas le pseudo joint : `onChange` déclenche un refetch du classement complet.
+   *
+   * Renvoie le canal ; à fermer au démontage (`unsubscribeChannel`).
+   */
+  const subscribeToScores = (lobbyId: string, onChange: () => void): RealtimeChannel =>
+    supabase
+      .channel(`game-scores:${lobbyId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'lobby_players',
+          filter: `lobby_id=eq.${lobbyId}`
+        },
+        () => onChange()
+      )
+      .subscribe()
+
+  /** Ferme un canal Realtime et libère la connexion côté Supabase. */
+  const unsubscribeChannel = (channel: RealtimeChannel): void => {
+    supabase.removeChannel(channel)
+  }
+
   return {
     pending,
     errorMessage,
@@ -310,6 +364,9 @@ export function useGame() {
     nextRound,
     fetchQuestion,
     fetchLeaderboard,
-    submitAnswer
+    submitAnswer,
+    subscribeToRounds,
+    subscribeToScores,
+    unsubscribeChannel
   }
 }

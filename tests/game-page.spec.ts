@@ -58,6 +58,29 @@ let rpc: ReturnType<typeof vi.fn>
 let invoke: ReturnType<typeof vi.fn>
 let routeQuery: Record<string, string>
 
+// Mock des canaux Realtime : un objet par canal (rounds, scores, statut du lobby),
+// capturant la config du filtre et le handler pour simuler les événements par table.
+let createdChannels: Array<Record<string, unknown>>
+let channelSpy: ReturnType<typeof vi.fn>
+let removeChannel: ReturnType<typeof vi.fn>
+
+const makeChannel = (name: string) => {
+  const ch: Record<string, unknown> = { name, config: null, handler: null }
+  ch.on = vi.fn((_type: string, config: unknown, handler: (payload: unknown) => void) => {
+    ch.config = config
+    ch.handler = handler
+    return ch
+  })
+  ch.subscribe = vi.fn(() => ch)
+  return ch
+}
+
+const channelFor = (table: string) =>
+  createdChannels.find(ch => (ch.config as { table?: string } | null)?.table === table)
+
+const fireChannel = (table: string, payload: unknown) =>
+  (channelFor(table)!.handler as (payload: unknown) => void)(payload)
+
 const mountPage = () =>
   mount(GamePage, {
     global: { stubs: { NuxtLink: { props: ['to'], template: '<a :href="to"><slot /></a>' } } }
@@ -83,6 +106,14 @@ beforeEach(() => {
 
   invoke = vi.fn().mockResolvedValue({ data: null, error: null })
 
+  createdChannels = []
+  channelSpy = vi.fn((name: string) => {
+    const ch = makeChannel(name)
+    createdChannels.push(ch)
+    return ch
+  })
+  removeChannel = vi.fn()
+
   rpc = vi.fn((name: string, args?: { p_round_id?: string }) => {
     if (name === 'get_round_question') {
       const row = questionByRound[args?.p_round_id ?? '']
@@ -101,7 +132,9 @@ beforeEach(() => {
     from,
     rpc,
     functions: { invoke },
-    auth: { getSession: vi.fn().mockResolvedValue({ data: { session: null } }) }
+    auth: { getSession: vi.fn().mockResolvedValue({ data: { session: null } }) },
+    channel: channelSpy,
+    removeChannel
   }))
   vi.stubGlobal('useSupabaseUser', () => ref({ sub: 'user-1' }))
   vi.stubGlobal('useRoute', () => ({ params: { id: 'lobby-1' }, query: routeQuery }))
@@ -329,27 +362,37 @@ describe('Page de jeu — compte à rebours (temps serveur)', () => {
   })
 })
 
+const NEXT_ROUND = {
+  round_id: 'round-2',
+  round_number: 4,
+  started_at: '2026-07-21T10:00:11Z', // nouveau round → décompte plein
+  status: 'active',
+  category: 'tech',
+  question_text: 'Question suivante ?',
+  answers: QUESTION.answers
+}
+
 describe('Page de jeu — métronome (hôte)', () => {
-  it('enchaîne automatiquement la question suivante à l’expiration du temps', async () => {
-    questionByRound['round-2'] = {
-      round_id: 'round-2',
-      round_number: 4,
-      started_at: '2026-07-21T10:00:11Z', // nouveau round → décompte plein
-      status: 'active',
-      category: 'tech',
-      question_text: 'Question suivante ?',
-      answers: QUESTION.answers
-    }
+  it('déclenche next_round à l’expiration, mais laisse Realtime charger la question', async () => {
+    questionByRound['round-2'] = NEXT_ROUND
 
     const wrapper = mountPage()
     await flushPromises()
     expect(wrapper.find('.board__progress').text()).toBe('Question 03/10')
 
-    // Les 10 s s'écoulent : l'hôte déclenche next_round, sans action humaine.
+    // Les 10 s s'écoulent : l'hôte (métronome) déclenche next_round, sans action humaine.
     await vi.advanceTimersByTimeAsync(10_000)
     await flushPromises()
 
     expect(rpc).toHaveBeenCalledWith('next_round', { p_lobby_id: 'lobby-1' })
+    // La question NE change PAS encore : elle attend l'INSERT game_rounds (Realtime),
+    // pour que l'hôte et les autres basculent au même instant.
+    expect(wrapper.find('.board__progress').text()).toBe('Question 03/10')
+
+    // L'INSERT arrive (l'hôte le reçoit comme tout le monde) → tous chargent le round 4.
+    fireChannel('game_rounds', { new: { id: 'round-2', round_number: 4 } })
+    await flushPromises()
+
     expect(wrapper.find('.board__progress').text()).toBe('Question 04/10')
     expect(wrapper.find('h1').text()).toBe('Question suivante ?')
     // Nouvelle question → réponses de nouveau actionnables.
@@ -394,10 +437,70 @@ describe('Page de jeu — non-hôte & temps écoulé', () => {
 
     // Un non-hôte ne déclenche jamais next_round.
     expect(rpc).not.toHaveBeenCalledWith('next_round', { p_lobby_id: 'lobby-1' })
-    // La question ne change pas (la bascule synchronisée arrive en 3c).
+    // Sans INSERT Realtime, la question ne change pas : le non-hôte attend le round suivant.
     expect(wrapper.find('.board__progress').text()).toBe('Question 03/10')
     // Temps écoulé : réponses désactivées, et l'expiration est annoncée (pas que visuelle).
     expect(wrapper.findAll('.answer').every(a => a.attributes('disabled') !== undefined)).toBe(true)
     expect(wrapper.find('[role="status"]').text()).toContain('Temps écoulé')
+  })
+})
+
+describe('Page de jeu — synchro multi-client (Realtime)', () => {
+  it('bascule sur la nouvelle question à l’INSERT game_rounds, même sans être hôte', async () => {
+    // Non-hôte : aucun timer ne le fait avancer, seul l'événement Realtime le fait.
+    lobbiesTable.result = { data: { host_id: 'user-2', status: 'in_progress' }, error: null }
+    questionByRound['round-2'] = NEXT_ROUND
+
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.find('.board__progress').text()).toBe('Question 03/10')
+
+    // L'hôte a créé le round 2 ; je le reçois passivement et charge la même question.
+    fireChannel('game_rounds', { new: { id: 'round-2', round_number: 4 } })
+    await flushPromises()
+
+    expect(wrapper.find('.board__progress').text()).toBe('Question 04/10')
+    expect(wrapper.find('h1').text()).toBe('Question suivante ?')
+  })
+
+  it('rafraîchit le classement live quand un score change (lobby_players)', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    // NeonDrifter (moi) mène à 7 ; CipherX passe devant à 9 après avoir répondu.
+    playersTable.result = {
+      data: [
+        { user_id: 'user-2', score: 9, profile: { pseudo: 'CipherX' } },
+        { user_id: 'user-1', score: 7, profile: { pseudo: 'NeonDrifter' } }
+      ],
+      error: null
+    }
+
+    fireChannel('lobby_players', { eventType: 'UPDATE' })
+    await flushPromises()
+
+    const rows = wrapper.findAll('.rank')
+    expect(rows[0]!.text()).toContain('CipherX')
+    expect(rows[0]!.text()).toContain('9 pts')
+  })
+
+  it('bascule sur l’écran de fin quand l’hôte termine la partie (statut lobby)', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    fireChannel('lobbies', { new: { status: 'finished' } })
+    await flushPromises()
+
+    expect(wrapper.findAll('h1')).toHaveLength(1)
+    expect(wrapper.find('h1').text()).toBe('Partie terminée')
+  })
+
+  it('ferme tous les canaux Realtime au démontage (rounds, scores, statut)', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    wrapper.unmount()
+
+    expect(removeChannel).toHaveBeenCalledTimes(3)
   })
 })

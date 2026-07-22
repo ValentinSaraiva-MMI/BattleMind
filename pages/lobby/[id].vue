@@ -16,8 +16,12 @@ const {
   fetchLobby,
   leaveLobby,
   subscribeToLobbyPlayers,
+  subscribeToLobbyStatus,
   unsubscribeLobbyPlayers
 } = useLobby()
+
+/** Redirige vers la partie. Fallback sans `?round` : la page de jeu relira le round actif. */
+const goToGame = () => navigateTo(`/game/${lobbyId.value}`)
 
 // Le lancement appartient à la boucle de jeu : `start_game` passe le lobby en
 // partie et crée le round 1. Son état de chargement/erreur est distinct de
@@ -45,28 +49,47 @@ const connectedLabel = computed(() =>
   lobby.value ? `${lobby.value.players.length} / ${lobby.value.maxPlayers} connectés` : ''
 )
 
-// Canal Realtime du salon, conservé pour être fermé au démontage.
+// Canaux Realtime du salon, conservés pour être fermés au démontage.
 let playersChannel: RealtimeChannel | null = null
+let statusChannel: RealtimeChannel | null = null
 
-// Les données se chargent au montage, puis le canal Realtime prend le relais :
-// la grille et le compteur suivent les arrivées et départs sans rechargement.
+// Les données se chargent au montage, puis les canaux Realtime prennent le relais :
+// la grille suit les arrivées/départs, et le statut redirige vers la partie.
 onMounted(async () => {
   userId.value = await resolveUserId()
   await fetchLobby(lobbyId.value)
+
+  // Rechargement ou arrivée tardive alors que la partie a déjà démarré : on file
+  // directement dans la partie plutôt que d'afficher un salon figé.
+  if (lobby.value && lobby.value.status !== 'waiting') {
+    await goToGame()
+    return
+  }
 
   // Chaque INSERT/DELETE sur lobby_players de ce salon déclenche un refetch
   // silencieux (sans flash de « Chargement… »), ce qui reconstruit la liste.
   playersChannel = subscribeToLobbyPlayers(lobbyId.value, () => {
     fetchLobby(lobbyId.value, { silent: true })
   })
+
+  // Quand l'hôte lance (status → in_progress), les autres joueurs basculent
+  // automatiquement en partie. L'hôte, lui, y va déjà via `onStart` (avec le
+  // round dans l'URL) : on l'exclut pour ne pas naviguer deux fois.
+  statusChannel = subscribeToLobbyStatus(lobbyId.value, status => {
+    if (status === 'in_progress' && !isHost.value) goToGame()
+  })
 })
 
-// Sans ce nettoyage, chaque passage dans un salon laisserait une connexion
-// Realtime ouverte — fuite de canaux côté Supabase.
+// Sans ce nettoyage, chaque passage dans un salon laisserait des connexions
+// Realtime ouvertes — fuite de canaux côté Supabase.
 onUnmounted(() => {
   if (playersChannel) {
     unsubscribeLobbyPlayers(playersChannel)
     playersChannel = null
+  }
+  if (statusChannel) {
+    unsubscribeLobbyPlayers(statusChannel)
+    statusChannel = null
   }
 })
 

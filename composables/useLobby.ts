@@ -442,6 +442,34 @@ export function useLobby() {
       )
       .subscribe()
 
+  /**
+   * Souscrit aux changements de statut d'un salon (`lobbies`), pour basculer les
+   * joueurs présents dans la partie dès que l'hôte lance : à l'UPDATE de la ligne
+   * (filtre `id=eq.<id>`), `onStatus` reçoit le nouveau statut. La page redirige
+   * alors vers `/game/<id>`.
+   *
+   * Renvoie le canal ; l'appelant DOIT le fermer au démontage (fuite sinon).
+   * NB : `lobbies` doit être publiée pour Realtime (voir
+   * db/migrations/2026-07-22_realtime_lobbies.sql).
+   */
+  const subscribeToLobbyStatus = (
+    lobbyId: string,
+    onStatus: (status: LobbyDetail['status']) => void
+  ): RealtimeChannel =>
+    supabase
+      .channel(`lobby-status:${lobbyId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'lobbies',
+          filter: `id=eq.${lobbyId}`
+        },
+        payload => onStatus((payload.new as { status: LobbyDetail['status'] }).status)
+      )
+      .subscribe()
+
   /** Ferme le canal Realtime et libère la connexion côté Supabase. */
   const unsubscribeLobbyPlayers = (channel: RealtimeChannel): void => {
     supabase.removeChannel(channel)
@@ -463,6 +491,7 @@ export function useLobby() {
     fetchPublicLobbies,
     fetchLobby,
     subscribeToLobbyPlayers,
+    subscribeToLobbyStatus,
     unsubscribeLobbyPlayers
   }
 }

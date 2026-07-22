@@ -1,5 +1,7 @@
 <script setup lang="ts">
+import type { RealtimeChannel } from '@supabase/supabase-js'
 import { useGame, type RoundQuestion, type AnswerResult, NEXT_ROUND_ERROR } from '~/composables/useGame'
+import { useLobby } from '~/composables/useLobby'
 import {
   answerState,
   formatRoundProgress,
@@ -29,8 +31,14 @@ const {
   nextRound,
   fetchQuestion,
   fetchLeaderboard,
-  submitAnswer
+  submitAnswer,
+  subscribeToRounds,
+  subscribeToScores,
+  unsubscribeChannel
 } = useGame()
+
+// Le suivi du statut du lobby (fin de partie) vit dans useLobby, réutilisé ici.
+const { subscribeToLobbyStatus } = useLobby()
 
 type PageStatus = 'pending' | 'loaded' | 'error' | 'finished'
 const status = ref<PageStatus>('pending')
@@ -119,40 +127,54 @@ const applyQuestion = (loaded: RoundQuestion) => {
   remaining.value = remainingSeconds(loaded.startedAt, Date.now())
 }
 
+/** Rafraîchit le classement (score écrit côté serveur, jamais dérivé localement). */
+const refreshLeaderboard = async () => {
+  leaderboard.value = await fetchLeaderboard(lobbyId.value)
+}
+
 /**
- * À l'expiration : réponses verrouillées (`timeUp`). Seul l'HÔTE avance (effet
- * auto du timer, pas une action humaine). Les autres attendent (synchro en 3c).
+ * Charge un round et relance le décompte. Appelé par la souscription `game_rounds`
+ * (INSERT) : quand l'hôte crée le round suivant, TOUS les clients passent à la
+ * même question au même instant. Une erreur transitoire de chargement laisse la
+ * question courante en place (le prochain round rattrapera), plutôt que de casser
+ * la partie.
+ */
+const loadRound = async (roundId: string) => {
+  if (status.value === 'finished') return
+  const loaded = await fetchQuestion(roundId)
+  if (!loaded) return
+  applyQuestion(loaded)
+  await refreshLeaderboard()
+  startTicker()
+}
+
+/**
+ * À l'expiration : réponses verrouillées (`timeUp`). Seul l'HÔTE déclenche
+ * `next_round` (métronome) ; un non-hôte ne le fait JAMAIS, il attend passivement
+ * le nouveau round via Realtime. La question suivante n'est pas chargée ici :
+ * l'INSERT sur `game_rounds` s'en charge pour tous les clients à l'identique
+ * (`loadRound`). Fin de partie (après le round 10) → écran final.
  */
 const onTimeUp = async () => {
   if (!isHost.value || advancing.value || status.value !== 'loaded') return
   advancing.value = true
-  stopTicker() // on gèle le décompte pendant la bascule
+  stopTicker() // le décompte reste figé jusqu'à l'arrivée du prochain round
 
   const result = await nextRound(lobbyId.value)
+  advancing.value = false
+
   if (!result) {
     // Fail closed : on n'enchaîne pas et on ne martèle pas. Issue = nav globale du layout.
     answerError.value = NEXT_ROUND_ERROR
-    advancing.value = false
     return
   }
-
-  // Après le round 10, next_round clôt la partie : écran de fin (résultats = 3d).
-  if (result.finished || !result.roundId) {
-    status.value = 'finished'
-    return
-  }
-
-  const loaded = await fetchQuestion(result.roundId)
-  if (!loaded) {
-    status.value = 'error'
-    return
-  }
-
-  applyQuestion(loaded)
-  leaderboard.value = await fetchLeaderboard(lobbyId.value)
-  advancing.value = false
-  startTicker()
+  if (result.finished) status.value = 'finished'
 }
+
+// Canaux Realtime de la partie (synchro 3c), fermés au démontage.
+let roundsChannel: RealtimeChannel | null = null
+let scoresChannel: RealtimeChannel | null = null
+let statusChannel: RealtimeChannel | null = null
 
 onMounted(async () => {
   meId.value = await resolveUserId()
@@ -180,13 +202,31 @@ onMounted(async () => {
 
   question.value = loaded
   remaining.value = remainingSeconds(loaded.startedAt, Date.now())
-  leaderboard.value = await fetchLeaderboard(lobbyId.value)
+  await refreshLeaderboard()
   status.value = 'loaded'
   startTicker()
+
+  // --- Synchro multi-client (3c) ---------------------------------------
+  // Nouveau round créé par l'hôte → tous les clients chargent la même question.
+  roundsChannel = subscribeToRounds(lobbyId.value, round => void loadRound(round.id))
+  // Un score change → le classement live se rafraîchit chez tout le monde.
+  scoresChannel = subscribeToScores(lobbyId.value, () => void refreshLeaderboard())
+  // L'hôte a terminé la partie (status → finished) → écran final pour tous.
+  statusChannel = subscribeToLobbyStatus(lobbyId.value, s => {
+    if (s === 'finished') {
+      stopTicker()
+      status.value = 'finished'
+    }
+  })
 })
 
-// Ne pas laisser d'intervalle tourner après la sortie.
-onBeforeUnmount(stopTicker)
+// Ne laisser ni intervalle ni canal Realtime ouverts après la sortie de la page.
+onUnmounted(() => {
+  stopTicker()
+  for (const channel of [roundsChannel, scoresChannel, statusChannel]) {
+    if (channel) unsubscribeChannel(channel)
+  }
+})
 
 const onAnswer = async (key: string) => {
   // On ne répond qu'une fois, jamais pendant une soumission, jamais hors délai.
@@ -199,10 +239,11 @@ const onAnswer = async (key: string) => {
     return
   }
 
-  // Le verdict fige l'affichage (vert/rouge) ; le classement reflète le nouveau score.
+  // Le verdict fige l'affichage (vert/rouge) ; mon score se reflète tout de suite
+  // (les autres clients le verront via la souscription `subscribeToScores`).
   lastResult.value = result
   outcome.value = { selectedKey: key, correctKey: result.correctKey }
-  leaderboard.value = await fetchLeaderboard(lobbyId.value)
+  await refreshLeaderboard()
 }
 </script>
 
