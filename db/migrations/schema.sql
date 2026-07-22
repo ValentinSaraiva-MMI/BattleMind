@@ -568,3 +568,49 @@ begin
   return jsonb_build_object('finished', false, 'round_id', v_round_id, 'round_number', v_current_num + 1);
 end;
 $$;
+
+create or replace function public.get_round_question(p_round_id uuid)
+returns jsonb
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_round     public.game_rounds;
+  v_question  public.questions;
+begin
+  -- 1. Charger le round demandé
+  select * into v_round from public.game_rounds where id = p_round_id;
+  if v_round.id is null then
+    raise exception 'Round introuvable';
+  end if;
+
+  -- 2. Vérifier que l'appelant est bien membre du lobby de ce round
+  --    (on ne sert pas les questions d'une partie où on ne joue pas)
+  if not public.is_lobby_member(v_round.lobby_id) then
+    raise exception 'Accès refusé';
+  end if;
+
+  -- 3. Charger la question
+  select * into v_question from public.questions where id = v_round.question_id;
+
+  -- 4. Renvoyer l'énoncé + les réponses, MAIS JAMAIS correct_key.
+  --    started_at permet au client de calculer le temps restant.
+  return jsonb_build_object(
+    'round_id',     v_round.id,
+    'round_number', v_round.round_number,
+    'started_at',   v_round.started_at,
+    'status',       v_round.status,
+    'category',     v_question.category,
+    'question_text', v_question.question_text,
+    'answers',      v_question.answers   -- [{key,text}...] sans indication de la bonne
+  );
+end;
+$$;
+
+grant execute on function public.get_round_question(uuid) to authenticated;
+
+
+grant select on public.game_rounds to service_role;
+grant select, insert on public.player_answers to service_role;
+grant select, update on public.lobby_players to service_role;
+grant select on public.questions to service_role;
