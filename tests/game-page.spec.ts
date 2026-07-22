@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { ref } from 'vue'
 import { mount, flushPromises } from '@vue/test-utils'
-import GamePage from '~/pages/game/[id].vue'
+import GamePage from '~/pages/game/[id]/index.vue'
 
 const QUESTION = {
   round_id: 'round-1',
@@ -57,6 +57,7 @@ let nextRoundResult: { data: unknown, error: unknown }
 let rpc: ReturnType<typeof vi.fn>
 let invoke: ReturnType<typeof vi.fn>
 let routeQuery: Record<string, string>
+let navigateToMock: ReturnType<typeof vi.fn>
 
 // Mock des canaux Realtime : un objet par canal (rounds, scores, statut du lobby),
 // capturant la config du filtre et le handler pour simuler les événements par table.
@@ -98,7 +99,10 @@ beforeEach(() => {
   lobbiesTable = makeTable()
   playersTable.result = { data: LEADERBOARD, error: null }
   // Par défaut : je suis l'hôte (métronome), partie en cours.
-  lobbiesTable.result = { data: { host_id: 'user-1', status: 'in_progress' }, error: null }
+  lobbiesTable.result = {
+    data: { host_id: 'user-1', status: 'in_progress', name: 'Neon Protocol', category: 'tech' },
+    error: null
+  }
   questionResult = { data: QUESTION, error: null }
   questionByRound = {}
   nextRoundResult = { data: { finished: false, round_id: 'round-2', round_number: 4 }, error: null }
@@ -136,9 +140,12 @@ beforeEach(() => {
     channel: channelSpy,
     removeChannel
   }))
+  navigateToMock = vi.fn()
+
   vi.stubGlobal('useSupabaseUser', () => ref({ sub: 'user-1' }))
   vi.stubGlobal('useRoute', () => ({ params: { id: 'lobby-1' }, query: routeQuery }))
   vi.stubGlobal('useHead', () => {})
+  vi.stubGlobal('navigateTo', navigateToMock)
 })
 
 afterEach(() => {
@@ -399,26 +406,29 @@ describe('Page de jeu — métronome (hôte)', () => {
     expect(wrapper.findAll('.answer').every(a => a.attributes('disabled') === undefined)).toBe(true)
   })
 
-  it('affiche l’écran de fin quand le serveur clôt la partie après le dernier round', async () => {
+  it('bascule vers l’écran de résultats quand le serveur clôt la partie (round 10)', async () => {
     nextRoundResult = { data: { finished: true }, error: null }
 
-    const wrapper = mountPage()
+    mountPage()
     await flushPromises()
 
     await vi.advanceTimersByTimeAsync(10_000)
     await flushPromises()
 
-    expect(wrapper.findAll('h1')).toHaveLength(1)
-    expect(wrapper.find('h1').text()).toBe('Partie terminée')
+    expect(rpc).toHaveBeenCalledWith('next_round', { p_lobby_id: 'lobby-1' })
+    expect(navigateToMock).toHaveBeenCalledWith('/game/lobby-1/results')
   })
 
-  it('montre directement l’écran de fin si la partie est déjà terminée (rechargement)', async () => {
-    lobbiesTable.result = { data: { host_id: 'user-1', status: 'finished' }, error: null }
+  it('redirige vers les résultats si la partie est déjà terminée (rechargement)', async () => {
+    lobbiesTable.result = {
+      data: { host_id: 'user-1', status: 'finished', name: 'Neon Protocol', category: 'tech' },
+      error: null
+    }
 
-    const wrapper = mountPage()
+    mountPage()
     await flushPromises()
 
-    expect(wrapper.find('h1').text()).toBe('Partie terminée')
+    expect(navigateToMock).toHaveBeenCalledWith('/game/lobby-1/results')
     // Aucune question chargée : on court-circuite sur le statut du lobby.
     expect(rpc).not.toHaveBeenCalledWith('get_round_question', expect.anything())
   })
@@ -484,15 +494,14 @@ describe('Page de jeu — synchro multi-client (Realtime)', () => {
     expect(rows[0]!.text()).toContain('9 pts')
   })
 
-  it('bascule sur l’écran de fin quand l’hôte termine la partie (statut lobby)', async () => {
-    const wrapper = mountPage()
+  it('bascule vers les résultats quand l’hôte termine la partie (statut lobby)', async () => {
+    mountPage()
     await flushPromises()
 
     fireChannel('lobbies', { new: { status: 'finished' } })
     await flushPromises()
 
-    expect(wrapper.findAll('h1')).toHaveLength(1)
-    expect(wrapper.find('h1').text()).toBe('Partie terminée')
+    expect(navigateToMock).toHaveBeenCalledWith('/game/lobby-1/results')
   })
 
   it('ferme tous les canaux Realtime au démontage (rounds, scores, statut)', async () => {

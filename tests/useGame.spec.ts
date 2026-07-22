@@ -68,6 +68,9 @@ beforeEach(() => {
   rpc = vi.fn((name: string) => {
     if (name === 'start_game') return Promise.resolve(startGameResult)
     if (name === 'next_round') return Promise.resolve(nextRoundResult)
+    if (name === 'finish_game' || name === 'reset_lobby') {
+      return Promise.resolve({ data: null, error: null })
+    }
     return Promise.resolve(questionResult)
   })
   invoke = vi.fn().mockResolvedValue({ data: null, error: null })
@@ -173,14 +176,23 @@ describe('useGame — fetchActiveRound', () => {
 })
 
 describe('useGame — fetchGameMeta', () => {
-  it('projette l’hôte et le statut du lobby', async () => {
-    lobbiesTable.result = { data: { host_id: 'user-1', status: 'in_progress' }, error: null }
+  it('projette l’hôte, le statut, le nom et le thème du lobby', async () => {
+    lobbiesTable.result = {
+      data: { host_id: 'user-1', status: 'in_progress', name: 'Neon Protocol', category: 'tech' },
+      error: null
+    }
     const api = await setup()
 
     const meta = await api.fetchGameMeta('lobby-1')
 
     expect(lobbiesTable.eq).toHaveBeenCalledWith('id', 'lobby-1')
-    expect(meta).toEqual({ hostId: 'user-1', status: 'in_progress' })
+    // Le thème est projeté en libellé lisible pour le sous-titre des résultats.
+    expect(meta).toEqual({
+      hostId: 'user-1',
+      status: 'in_progress',
+      name: 'Neon Protocol',
+      categoryLabel: 'Tech'
+    })
   })
 
   it('reste fail closed sur erreur de lecture (personne n’est hôte)', async () => {
@@ -188,6 +200,36 @@ describe('useGame — fetchGameMeta', () => {
     const api = await setup()
 
     expect(await api.fetchGameMeta('lobby-1')).toBeNull()
+  })
+})
+
+describe('useGame — finishGame / resetLobby', () => {
+  it('finishGame délègue la clôture (crédit XP) à finish_game et signale le succès', async () => {
+    const api = await setup()
+
+    expect(await api.finishGame('lobby-1')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('finish_game', { p_lobby_id: 'lobby-1' })
+  })
+
+  it('finishGame reste fail closed si le serveur refuse (non-hôte, partie non finie)', async () => {
+    rpc.mockResolvedValueOnce({ data: null, error: { message: 'Seul l’hôte peut clôturer' } })
+    const api = await setup()
+
+    expect(await api.finishGame('lobby-1')).toBe(false)
+  })
+
+  it('resetLobby délègue la réinitialisation à reset_lobby et signale le succès', async () => {
+    const api = await setup()
+
+    expect(await api.resetLobby('lobby-1')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('reset_lobby', { p_lobby_id: 'lobby-1' })
+  })
+
+  it('resetLobby reste fail closed sur exception réseau', async () => {
+    rpc.mockRejectedValueOnce(new Error('network down'))
+    const api = await setup()
+
+    expect(await api.resetLobby('lobby-1')).toBe(false)
   })
 })
 
