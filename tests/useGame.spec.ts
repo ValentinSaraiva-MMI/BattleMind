@@ -50,6 +50,13 @@ let invoke: ReturnType<typeof vi.fn>
 let getSession: ReturnType<typeof vi.fn>
 let userRef: Ref<typeof SESSION_CLAIMS | null>
 
+// Mock du canal Realtime : capture le nom, la config du filtre et le handler.
+let channelObj: Record<string, ReturnType<typeof vi.fn>>
+let channelSpy: ReturnType<typeof vi.fn>
+let removeChannel: ReturnType<typeof vi.fn>
+let realtimeConfig: unknown
+let realtimeHandler: ((payload: unknown) => void) | null
+
 beforeEach(() => {
   roundsTable = makeTable()
   playersTable = makeTable()
@@ -67,6 +74,18 @@ beforeEach(() => {
   getSession = vi.fn().mockResolvedValue({ data: { session: { user: { id: 'user-1' } } } })
   userRef = ref<typeof SESSION_CLAIMS | null>(SESSION_CLAIMS)
 
+  realtimeConfig = null
+  realtimeHandler = null
+  channelObj = {} as Record<string, ReturnType<typeof vi.fn>>
+  channelObj.on = vi.fn((_type: string, config: unknown, handler: (payload: unknown) => void) => {
+    realtimeConfig = config
+    realtimeHandler = handler
+    return channelObj
+  })
+  channelObj.subscribe = vi.fn(() => channelObj)
+  channelSpy = vi.fn(() => channelObj)
+  removeChannel = vi.fn()
+
   const from = vi.fn((table: string) => {
     if (table === 'game_rounds') return roundsTable
     if (table === 'lobbies') return lobbiesTable
@@ -77,7 +96,9 @@ beforeEach(() => {
     from,
     rpc,
     functions: { invoke },
-    auth: { getSession }
+    auth: { getSession },
+    channel: channelSpy,
+    removeChannel
   }))
   vi.stubGlobal('useSupabaseUser', () => userRef)
 })
@@ -334,5 +355,52 @@ describe('useGame — submitAnswer', () => {
 
     expect(await api.submitAnswer('round-1', 'A')).toBeNull()
     expect(api.errorMessage.value).toBe(ANSWER_ERROR)
+  })
+})
+
+describe('useGame — souscriptions Realtime', () => {
+  it('subscribeToRounds : INSERT game_rounds filtré sur le lobby, passe la nouvelle ligne', async () => {
+    const api = await setup()
+    const onInsert = vi.fn()
+
+    const channel = api.subscribeToRounds('lobby-1', onInsert)
+
+    expect(channelSpy).toHaveBeenCalledWith('game-rounds:lobby-1')
+    expect(realtimeConfig).toEqual({
+      event: 'INSERT',
+      schema: 'public',
+      table: 'game_rounds',
+      filter: 'lobby_id=eq.lobby-1'
+    })
+    // Le rappel reçoit la nouvelle ligne (au moins son id) pour charger la question.
+    realtimeHandler!({ new: { id: 'round-2', round_number: 4 } })
+    expect(onInsert).toHaveBeenCalledWith({ id: 'round-2', round_number: 4 })
+    expect(channel).toBe(channelObj)
+  })
+
+  it('subscribeToScores : changements lobby_players filtrés, déclenche le rappel', async () => {
+    const api = await setup()
+    const onChange = vi.fn()
+
+    api.subscribeToScores('lobby-1', onChange)
+
+    expect(channelSpy).toHaveBeenCalledWith('game-scores:lobby-1')
+    expect(realtimeConfig).toEqual({
+      event: '*',
+      schema: 'public',
+      table: 'lobby_players',
+      filter: 'lobby_id=eq.lobby-1'
+    })
+    realtimeHandler!({ eventType: 'UPDATE' })
+    expect(onChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('unsubscribeChannel ferme le canal pour libérer la connexion', async () => {
+    const api = await setup()
+    const channel = api.subscribeToRounds('lobby-1', () => {})
+
+    api.unsubscribeChannel(channel)
+
+    expect(removeChannel).toHaveBeenCalledWith(channelObj)
   })
 })

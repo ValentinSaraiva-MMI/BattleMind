@@ -614,3 +614,25 @@ grant select on public.game_rounds to service_role;
 grant select, insert on public.player_answers to service_role;
 grant select, update on public.lobby_players to service_role;
 grant select on public.questions to service_role;
+
+-- Active la réplication Realtime pour la table `lobbies` (étape 3c, synchro multi-client).
+--
+-- Deux usages en dépendent :
+--   - redirection automatique des joueurs vers la partie quand `status` passe à
+--     'in_progress' (souscription depuis pages/lobby/[id].vue) ;
+--   - bascule des non-hôtes sur l'écran de fin quand `status` passe à 'finished'
+--     (souscription depuis pages/game/[id].vue).
+--
+-- `lobby_players` et `game_rounds` étaient déjà publiées (voir schema.sql).
+-- Idempotent : n'ajoute la table que si elle n'est pas déjà dans la publication.
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'lobbies'
+  ) then
+    alter publication supabase_realtime add table public.lobbies;
+  end if;
+end $$;

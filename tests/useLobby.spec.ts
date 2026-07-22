@@ -500,3 +500,24 @@ describe('useLobby — synchro temps réel (lobby_players)', () => {
     expect(removeChannel).toHaveBeenCalledWith(channelObj)
   })
 })
+
+describe('useLobby — synchro temps réel (statut du salon)', () => {
+  it('ouvre un canal UPDATE filtré sur la ligne du lobby et passe le nouveau statut', async () => {
+    const api = await setup()
+    const onStatus = vi.fn()
+
+    const channel = api.subscribeToLobbyStatus('lobby-1', onStatus)
+
+    expect(channelSpy).toHaveBeenCalledWith('lobby-status:lobby-1')
+    expect(realtimeConfig).toEqual({
+      event: 'UPDATE',
+      schema: 'public',
+      table: 'lobbies',
+      filter: 'id=eq.lobby-1'
+    })
+    // Le rappel reçoit le statut extrait de la nouvelle ligne.
+    realtimeHandler!({ new: { status: 'in_progress' } })
+    expect(onStatus).toHaveBeenCalledWith('in_progress')
+    expect(channel).toBe(channelObj)
+  })
+})

@@ -27,13 +27,29 @@ let navigateToMock: ReturnType<typeof vi.fn>
 let writeText: ReturnType<typeof vi.fn>
 let currentUser: string | null
 
-// Mock du canal Realtime : on capture la config du filtre et le callback pour
-// pouvoir simuler une arrivée/un départ, et on espionne la fermeture du canal.
-let channelObj: Record<string, ReturnType<typeof vi.fn>>
+// Mock des canaux Realtime : un objet par canal (le salon en ouvre deux —
+// lobby_players et lobbies), capturant nom, config du filtre et handler, pour
+// simuler des événements table par table.
+let createdChannels: Array<Record<string, unknown>>
 let channelSpy: ReturnType<typeof vi.fn>
 let removeChannel: ReturnType<typeof vi.fn>
-let realtimeConfig: unknown
-let realtimeHandler: ((payload: unknown) => void) | null
+
+const makeChannel = (name: string) => {
+  const ch: Record<string, unknown> = { name, config: null, handler: null }
+  ch.on = vi.fn((_type: string, config: unknown, handler: (payload: unknown) => void) => {
+    ch.config = config
+    ch.handler = handler
+    return ch
+  })
+  ch.subscribe = vi.fn(() => ch)
+  return ch
+}
+
+const channelFor = (table: string) =>
+  createdChannels.find(ch => (ch.config as { table?: string } | null)?.table === table)
+
+const fireChannel = (table: string, payload: unknown) =>
+  (channelFor(table)!.handler as (payload: unknown) => void)(payload)
 
 const makeTable = () => {
   const built = { result: { data: LOBBY, error: null } } as never as Record<string, ReturnType<typeof vi.fn>> & {
@@ -65,16 +81,12 @@ beforeEach(() => {
   writeText = vi.fn().mockResolvedValue(undefined)
   currentUser = 'user-1'
 
-  realtimeConfig = null
-  realtimeHandler = null
-  channelObj = {} as Record<string, ReturnType<typeof vi.fn>>
-  channelObj.on = vi.fn((_type: string, config: unknown, handler: (payload: unknown) => void) => {
-    realtimeConfig = config
-    realtimeHandler = handler
-    return channelObj
+  createdChannels = []
+  channelSpy = vi.fn((name: string) => {
+    const ch = makeChannel(name)
+    createdChannels.push(ch)
+    return ch
   })
-  channelObj.subscribe = vi.fn(() => channelObj)
-  channelSpy = vi.fn(() => channelObj)
   removeChannel = vi.fn()
 
   vi.stubGlobal('useSupabaseClient', () => ({
@@ -251,7 +263,7 @@ describe('Page salon — synchro temps réel', () => {
     await flushPromises()
 
     expect(channelSpy).toHaveBeenCalled()
-    expect(realtimeConfig).toMatchObject({
+    expect(channelFor('lobby_players')?.config).toMatchObject({
       event: '*',
       schema: 'public',
       table: 'lobby_players',
@@ -279,7 +291,7 @@ describe('Page salon — synchro temps réel', () => {
     }
 
     // L'événement Realtime déclenche le refetch silencieux.
-    realtimeHandler!({ eventType: 'INSERT' })
+    fireChannel('lobby_players', { eventType: 'INSERT' })
     await flushPromises()
 
     expect(wrapper.findAll('.player')).toHaveLength(3)
@@ -301,7 +313,7 @@ describe('Page salon — synchro temps réel', () => {
       error: null
     }
 
-    realtimeHandler!({ eventType: 'DELETE' })
+    fireChannel('lobby_players', { eventType: 'DELETE' })
     await flushPromises()
 
     expect(wrapper.findAll('.player')).toHaveLength(1)
@@ -309,12 +321,55 @@ describe('Page salon — synchro temps réel', () => {
     expect(wrapper.findAll('.slot')).toHaveLength(5)
   })
 
-  it('ferme le canal Realtime au démontage pour ne pas fuiter de connexion', async () => {
+  it('ferme les canaux Realtime au démontage pour ne pas fuiter de connexion', async () => {
     const wrapper = mountPage()
     await flushPromises()
 
     wrapper.unmount()
 
-    expect(removeChannel).toHaveBeenCalledWith(channelObj)
+    // Deux canaux ouverts (joueurs + statut) → deux fermetures.
+    expect(removeChannel).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('Page salon — bascule en partie', () => {
+  it('souscrit au statut du salon, filtré sur sa ligne', async () => {
+    mountPage()
+    await flushPromises()
+
+    expect(channelFor('lobbies')?.config).toMatchObject({
+      event: 'UPDATE',
+      schema: 'public',
+      table: 'lobbies',
+      filter: 'id=eq.lobby-1'
+    })
+  })
+
+  it('redirige un joueur non hôte vers la partie quand l’hôte lance', async () => {
+    currentUser = 'user-2' // je ne suis pas l'hôte (user-1)
+    mountPage()
+    await flushPromises()
+
+    fireChannel('lobbies', { new: { status: 'in_progress' } })
+
+    expect(navigateToMock).toHaveBeenCalledWith('/game/lobby-1')
+  })
+
+  it('ne redirige pas l’hôte via Realtime (il navigue déjà via « Lancer l’arène »)', async () => {
+    currentUser = 'user-1' // hôte
+    mountPage()
+    await flushPromises()
+
+    fireChannel('lobbies', { new: { status: 'in_progress' } })
+
+    expect(navigateToMock).not.toHaveBeenCalledWith('/game/lobby-1')
+  })
+
+  it('file directement en partie si le salon a déjà démarré (rechargement)', async () => {
+    table.result = { data: { ...LOBBY, status: 'in_progress' }, error: null }
+    mountPage()
+    await flushPromises()
+
+    expect(navigateToMock).toHaveBeenCalledWith('/game/lobby-1')
   })
 })
