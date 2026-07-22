@@ -1,6 +1,14 @@
 <script setup lang="ts">
-import { useGame, type RoundQuestion, type AnswerResult } from '~/composables/useGame'
-import { answerState, formatRoundProgress, type AnswerOutcome, type RankedPlayer } from '~/utils/game'
+import { useGame, type RoundQuestion, type AnswerResult, NEXT_ROUND_ERROR } from '~/composables/useGame'
+import {
+  answerState,
+  formatRoundProgress,
+  isLastRound,
+  remainingSeconds,
+  ROUND_DURATION_S,
+  type AnswerOutcome,
+  type RankedPlayer
+} from '~/utils/game'
 
 const route = useRoute()
 const lobbyId = computed(() => String(route.params.id ?? ''))
@@ -15,13 +23,16 @@ const queryRound = computed(() => {
 const {
   pending,
   errorMessage,
+  resolveUserId,
+  fetchGameMeta,
   fetchActiveRound,
+  nextRound,
   fetchQuestion,
   fetchLeaderboard,
   submitAnswer
 } = useGame()
 
-type PageStatus = 'pending' | 'loaded' | 'error'
+type PageStatus = 'pending' | 'loaded' | 'error' | 'finished'
 const status = ref<PageStatus>('pending')
 
 const question = ref<RoundQuestion | null>(null)
@@ -34,8 +45,28 @@ const lastResult = ref<AnswerResult | null>(null)
 const answered = computed(() => outcome.value !== null)
 const answerError = ref('')
 
+// Métronome : seul l'hôte fait défiler les questions. En solo (3b), le joueur EST l'hôte.
+const meId = ref<string | null>(null)
+const hostId = ref<string | null>(null)
+const isHost = computed(() => Boolean(meId.value) && meId.value === hostId.value)
+
+// Décompte dérivé du temps SERVEUR (started_at), pas d'un compteur local. `timeUp` verrouille la réponse.
+const remaining = ref(ROUND_DURATION_S)
+const timeUp = computed(() => remaining.value === 0)
+
+// Garde-fou : le métronome ne se déclenche qu'une fois par round.
+const advancing = ref(false)
+
 const progressLabel = computed(() =>
   question.value ? formatRoundProgress(question.value.roundNumber) : ''
+)
+const isFinalQuestion = computed(() =>
+  question.value ? isLastRound(question.value.roundNumber) : false
+)
+
+const RING_CIRCUMFERENCE = 2 * Math.PI * 20
+const ringOffset = computed(() =>
+  RING_CIRCUMFERENCE * (1 - remaining.value / ROUND_DURATION_S)
 )
 
 useHead({
@@ -47,18 +78,94 @@ useHead({
 /** État visuel d'un bouton une fois la question verrouillée (pur, testé). */
 const stateOf = (key: string) => answerState(key, outcome.value)
 
-/**
- * Restitution accessible du résultat (RGAA 7.4) : le verdict n'est pas porté
- * par la seule couleur des boutons, il est aussi annoncé dans une zone `status`.
- */
+/** Restitution accessible (RGAA 7.4) : verdict et expiration annoncés en zone `status`, pas seulement par la couleur. */
 const resultAnnouncement = computed(() => {
+  if (timeUp.value && !answered.value) return 'Temps écoulé. Tu n’as pas répondu à temps.'
   if (!outcome.value) return ''
   if (lastResult.value?.isCorrect) return 'Bonne réponse !'
   const good = question.value?.answers.find(answer => answer.key === outcome.value!.correctKey)
   return `Mauvaise réponse. La bonne réponse était : ${good?.text ?? outcome.value!.correctKey}.`
 })
 
+// --- Boucle de jeu : timer + enchaînement --------------------------------
+// On relit `remainingSeconds` à chaque top ; la vérité reste `started_at`.
+let ticker: ReturnType<typeof setInterval> | null = null
+
+const stopTicker = () => {
+  if (ticker !== null) {
+    clearInterval(ticker)
+    ticker = null
+  }
+}
+
+const tick = () => {
+  if (!question.value) return
+  remaining.value = remainingSeconds(question.value.startedAt, Date.now())
+  if (remaining.value === 0) void onTimeUp()
+}
+
+const startTicker = () => {
+  stopTicker()
+  tick() // affichage immédiat
+  ticker = setInterval(tick, 250)
+}
+
+/** Remet à zéro l'état de réponse et relance le décompte pour une nouvelle question. */
+const applyQuestion = (loaded: RoundQuestion) => {
+  question.value = loaded
+  outcome.value = null
+  lastResult.value = null
+  answerError.value = ''
+  remaining.value = remainingSeconds(loaded.startedAt, Date.now())
+}
+
+/**
+ * À l'expiration : réponses verrouillées (`timeUp`). Seul l'HÔTE avance (effet
+ * auto du timer, pas une action humaine). Les autres attendent (synchro en 3c).
+ */
+const onTimeUp = async () => {
+  if (!isHost.value || advancing.value || status.value !== 'loaded') return
+  advancing.value = true
+  stopTicker() // on gèle le décompte pendant la bascule
+
+  const result = await nextRound(lobbyId.value)
+  if (!result) {
+    // Fail closed : on n'enchaîne pas et on ne martèle pas. Issue = nav globale du layout.
+    answerError.value = NEXT_ROUND_ERROR
+    advancing.value = false
+    return
+  }
+
+  // Après le round 10, next_round clôt la partie : écran de fin (résultats = 3d).
+  if (result.finished || !result.roundId) {
+    status.value = 'finished'
+    return
+  }
+
+  const loaded = await fetchQuestion(result.roundId)
+  if (!loaded) {
+    status.value = 'error'
+    return
+  }
+
+  applyQuestion(loaded)
+  leaderboard.value = await fetchLeaderboard(lobbyId.value)
+  advancing.value = false
+  startTicker()
+}
+
 onMounted(async () => {
+  meId.value = await resolveUserId()
+
+  const meta = await fetchGameMeta(lobbyId.value)
+  hostId.value = meta?.hostId ?? null
+
+  // Partie déjà finie (rechargement après le dernier round) : écran de fin direct.
+  if (meta?.status === 'finished') {
+    status.value = 'finished'
+    return
+  }
+
   const roundId = queryRound.value || (await fetchActiveRound(lobbyId.value))
   if (!roundId) {
     status.value = 'error'
@@ -72,13 +179,18 @@ onMounted(async () => {
   }
 
   question.value = loaded
+  remaining.value = remainingSeconds(loaded.startedAt, Date.now())
   leaderboard.value = await fetchLeaderboard(lobbyId.value)
   status.value = 'loaded'
+  startTicker()
 })
 
+// Ne pas laisser d'intervalle tourner après la sortie.
+onBeforeUnmount(stopTicker)
+
 const onAnswer = async (key: string) => {
-  // On ne répond qu'une fois, et jamais pendant une soumission en cours.
-  if (answered.value || pending.value || !question.value) return
+  // On ne répond qu'une fois, jamais pendant une soumission, jamais hors délai.
+  if (answered.value || pending.value || timeUp.value || !question.value) return
   answerError.value = ''
 
   const result = await submitAnswer(question.value.roundId, key)
@@ -101,6 +213,16 @@ const onAnswer = async (key: string) => {
       <p class="state" role="status">Chargement de la question…</p>
     </template>
 
+    <template v-else-if="status === 'finished'">
+      <section class="over">
+        <h1 class="over__title">Partie terminée</h1>
+        <p class="over__text">
+          Les 10 questions sont passées. L’écran de résultats complet arrive bientôt.
+        </p>
+        <NuxtLink class="button button--ghost" :to="`/lobby/${lobbyId}`">Retour au salon</NuxtLink>
+      </section>
+    </template>
+
     <template v-else-if="status === 'error' || !question">
       <h1 class="sr-only">Partie indisponible</h1>
       <p class="state state--error" role="alert">
@@ -112,7 +234,32 @@ const onAnswer = async (key: string) => {
 
     <div v-else class="layout">
       <section class="board">
-        <p class="board__progress">Question {{ progressLabel }}</p>
+        <div class="board__header">
+          <div class="board__meta">
+            <!-- Numéro annoncé au changement (RGAA 7.4) ; le timer n'est pas verbalisé chaque seconde. -->
+            <p class="board__progress" aria-live="polite">Question {{ progressLabel }}</p>
+            <p v-if="isFinalQuestion" class="board__final">
+              <img src="/icons/rank.svg" alt="" width="14" height="14">
+              Dernière question
+            </p>
+          </div>
+
+          <div class="timer" role="timer" aria-label="Temps restant pour répondre à la question">
+            <svg class="timer__ring" viewBox="0 0 44 44" aria-hidden="true">
+              <circle class="timer__track" cx="22" cy="22" r="20" fill="none" />
+              <circle
+                class="timer__progress"
+                cx="22"
+                cy="22"
+                r="20"
+                fill="none"
+                :stroke-dasharray="RING_CIRCUMFERENCE"
+                :stroke-dashoffset="ringOffset"
+              />
+            </svg>
+            <span class="timer__value" aria-hidden="true">{{ remaining }}</span>
+          </div>
+        </div>
 
         <div class="board__question">
           <h1 class="question">{{ question.questionText }}</h1>
@@ -128,7 +275,7 @@ const onAnswer = async (key: string) => {
               'answer--incorrect': stateOf(answer.key) === 'incorrect'
             }"
             type="button"
-            :disabled="answered || pending"
+            :disabled="answered || pending || timeUp"
             @click="onAnswer(answer.key)"
           >
             <span class="answer__key" aria-hidden="true">{{ answer.key }}</span>
@@ -214,6 +361,20 @@ const onAnswer = async (key: string) => {
   border-right: 1px solid var(--color-border-subtle);
 }
 
+.board__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.board__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
 .board__progress {
   margin: 0;
   color: var(--color-text-muted);
@@ -221,6 +382,64 @@ const onAnswer = async (key: string) => {
   font-size: var(--text-xl);
   font-weight: var(--weight-semibold);
   line-height: normal;
+}
+
+/* « Dernière question » : info doublée d'une icône, pas la seule couleur (RGAA 3.1). */
+.board__final {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--color-accent);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: 0.9px;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+/* --- Compte à rebours (dérivé de started_at côté serveur) -------------- */
+
+.timer {
+  position: relative;
+  display: flex;
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+}
+
+.timer__ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* Départ à 12 h, vidage horaire. */
+  transform: rotate(-90deg);
+}
+
+.timer__track {
+  stroke: var(--color-border-subtle);
+  stroke-width: 4;
+}
+
+/* Objet graphique porteur d'info → contraste ≥ 3:1 (accent). */
+.timer__progress {
+  stroke: var(--color-accent);
+  stroke-width: 4;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.25s linear;
+}
+
+.timer__value {
+  position: relative;
+  color: var(--color-text);
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+  line-height: 1;
 }
 
 .board__question {
@@ -452,6 +671,37 @@ const onAnswer = async (key: string) => {
   align-self: center;
   margin-top: auto;
   opacity: 0.85;
+}
+
+/* --- Écran de fin (placeholder ; résultats complets = 3d) --- */
+
+.over {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 42px;
+  text-align: center;
+}
+
+.over__title {
+  margin: 0;
+  color: var(--color-text);
+  font-family: var(--font-display);
+  font-size: var(--text-3xl);
+  font-weight: var(--weight-bold);
+  line-height: normal;
+}
+
+.over__text {
+  max-width: 42ch;
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  line-height: 20px;
 }
 
 /* --- États & bouton retour --------------------------------------------- */

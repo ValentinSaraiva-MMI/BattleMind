@@ -11,10 +11,25 @@ export interface Answer {
 export interface RoundQuestion {
   roundId: string
   roundNumber: number
+  startedAt: string
   category: string
   categoryLabel: string
   questionText: string
   answers: Answer[]
+}
+
+/** État de la partie côté serveur, pour situer le joueur (hôte ? déjà terminée ?). */
+export interface GameMeta {
+  /** Hôte du lobby : seul lui fait avancer la partie (métronome). */
+  hostId: string | null
+  status: 'waiting' | 'in_progress' | 'finished'
+}
+
+/** Résultat de `next_round` : soit la partie continue (round suivant), soit elle se termine. */
+export interface NextRoundResult {
+  finished: boolean
+  roundId: string | null
+  roundNumber: number | null
 }
 
 /** Verdict renvoyé par l'Edge Function `submit_answer` après validation serveur. */
@@ -30,6 +45,7 @@ export const START_GAME_ERROR = "Impossible de lancer l'arène. Réessaie dans u
 export const ROUND_NOT_FOUND_ERROR = "Cette partie n'a pas encore de question active."
 export const QUESTION_ERROR = 'Impossible de charger la question. Réessaie dans un instant.'
 export const ANSWER_ERROR = 'Ta réponse n’a pas pu être enregistrée. Réessaie.'
+export const NEXT_ROUND_ERROR = "La partie n'a pas pu passer à la question suivante."
 
 /**
  * Accès à la boucle de jeu : lancement de la partie, chargement de la question
@@ -118,6 +134,58 @@ export function useGame() {
   }
 
   /**
+   * Lit l'état de la partie : qui est l'hôte, et où en est le lobby.
+   *
+   * `host_id` sert à désigner le métronome — seul l'hôte fait défiler les
+   * questions (voir `next_round`). `status` permet à la page de jeu de montrer
+   * directement l'écran de fin si la partie est déjà terminée (rechargement après
+   * le dernier round). La RLS autorise déjà un membre à lire son lobby. Renvoie
+   * `null` en cas d'échec — l'appelant reste fail closed (personne n'est hôte).
+   */
+  const fetchGameMeta = async (lobbyId: string): Promise<GameMeta | null> => {
+    try {
+      const { data, error } = await supabase
+        .from('lobbies')
+        .select('host_id, status')
+        .eq('id', lobbyId)
+        .maybeSingle()
+
+      const row = data as { host_id: string | null, status: GameMeta['status'] } | null
+      if (error || !row) return null
+
+      return { hostId: row.host_id, status: row.status }
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Fait avancer la partie d'un round (HÔTE uniquement — contrôlé côté serveur).
+   *
+   * `next_round` clôt le round courant et, soit crée le suivant, soit termine la
+   * partie au 10ᵉ. C'est le métronome : la page l'appelle automatiquement à
+   * l'expiration du timer, jamais sur une action humaine. On ne remonte pas de
+   * message ici (l'appel est automatique) ; la page décide quoi afficher à partir
+   * du résultat. Renvoie `null` en cas d'échec (réseau, ou appelant non-hôte).
+   */
+  const nextRound = async (lobbyId: string): Promise<NextRoundResult | null> => {
+    try {
+      const { data, error } = await supabase.rpc('next_round', { p_lobby_id: lobbyId })
+
+      const row = data as { finished?: boolean, round_id?: string, round_number?: number } | null
+      if (error || !row) return null
+
+      return {
+        finished: Boolean(row.finished),
+        roundId: row.round_id ?? null,
+        roundNumber: row.round_number ?? null
+      }
+    } catch {
+      return null
+    }
+  }
+
+  /**
    * Charge l'énoncé et les réponses d'un round via `get_round_question`.
    *
    * La fonction Postgres renvoie la question EXPURGÉE (jamais `correct_key`) et
@@ -132,6 +200,7 @@ export function useGame() {
       const row = data as {
         round_id: string
         round_number: number
+        started_at: string
         category: string
         question_text: string
         answers: Answer[] | null
@@ -140,6 +209,7 @@ export function useGame() {
       return {
         roundId: row.round_id,
         roundNumber: row.round_number,
+        startedAt: row.started_at,
         category: row.category,
         categoryLabel: categoryLabel(row.category),
         questionText: row.question_text,
@@ -235,7 +305,9 @@ export function useGame() {
     errorMessage,
     resolveUserId,
     startGame,
+    fetchGameMeta,
     fetchActiveRound,
+    nextRound,
     fetchQuestion,
     fetchLeaderboard,
     submitAnswer

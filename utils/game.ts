@@ -5,6 +5,36 @@
 /** Nombre de questions d'une partie. Voir la contrainte `round_number between 1 and 10`. */
 export const TOTAL_ROUNDS = 10
 
+/** Durée d'une question (s). DOIT égaler `ROUND_DURATION_S` de l'Edge Function
+ *  `submit_answer`, seule autorité sur le hors-délai ; ici, pur affichage. */
+export const ROUND_DURATION_S = 10
+
+/**
+ * Secondes restantes, dérivées du départ SERVEUR (`started_at`), jamais d'un
+ * compteur local : un rechargement retombe au bon temps et (3c) tous les clients
+ * affichent le même décompte. Borné [0, durée], arrondi au supérieur ; entrée
+ * invalide → 0 (fail closed).
+ */
+export const remainingSeconds = (
+  startedAt: string | number | Date,
+  now: number,
+  duration: number = ROUND_DURATION_S
+): number => {
+  const start = new Date(startedAt).getTime()
+  if (!Number.isFinite(start) || !Number.isFinite(now)) return 0
+  const left = duration - (now - start) / 1000
+  if (!Number.isFinite(left)) return 0
+  return Math.max(0, Math.min(duration, Math.ceil(left)))
+}
+
+/**
+ * Le round est-il le dernier ? Pur, pour l'affichage (« dernière question ») ;
+ * la clôture réelle appartient à `next_round`. Borne haute incluse, robuste au
+ * `NaN` et aux décimales.
+ */
+export const isLastRound = (roundNumber: number, total: number = TOTAL_ROUNDS): boolean =>
+  Number.isFinite(roundNumber) && Math.trunc(roundNumber) >= total
+
 /** Ligne brute de `lobby_players` (jointe au pseudo) servant au classement. */
 export interface PlayerScore {
   userId: string
