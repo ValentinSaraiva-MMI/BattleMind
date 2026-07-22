@@ -1,5 +1,4 @@
-// Expose les auto-imports Vue globalement (ref, reactive…), comme Nuxt en prod,
-// pour que les composants tournent en test sans runtime Nuxt.
+// Expose les auto-imports Vue en globals (comme Nuxt), pour tester sans runtime Nuxt.
 import * as vue from 'vue'
 
 const autoImports = [
@@ -9,6 +8,7 @@ const autoImports = [
   'watch',
   'watchEffect',
   'onMounted',
+  'onBeforeUnmount',
   'onUnmounted',
   'nextTick',
   'toRefs',

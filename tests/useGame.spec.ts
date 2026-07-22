@@ -41,8 +41,10 @@ const makeTable = (): MockTable => {
 
 let roundsTable: MockTable
 let playersTable: MockTable
+let lobbiesTable: MockTable
 let startGameResult: { data: unknown, error: unknown }
 let questionResult: { data: unknown, error: unknown }
+let nextRoundResult: { data: unknown, error: unknown }
 let rpc: ReturnType<typeof vi.fn>
 let invoke: ReturnType<typeof vi.fn>
 let getSession: ReturnType<typeof vi.fn>
@@ -51,17 +53,25 @@ let userRef: Ref<typeof SESSION_CLAIMS | null>
 beforeEach(() => {
   roundsTable = makeTable()
   playersTable = makeTable()
+  lobbiesTable = makeTable()
   startGameResult = { data: 'round-1', error: null }
   questionResult = { data: null, error: null }
+  nextRoundResult = { data: { finished: false, round_id: 'round-2', round_number: 4 }, error: null }
 
-  rpc = vi.fn((name: string) =>
-    Promise.resolve(name === 'start_game' ? startGameResult : questionResult)
-  )
+  rpc = vi.fn((name: string) => {
+    if (name === 'start_game') return Promise.resolve(startGameResult)
+    if (name === 'next_round') return Promise.resolve(nextRoundResult)
+    return Promise.resolve(questionResult)
+  })
   invoke = vi.fn().mockResolvedValue({ data: null, error: null })
   getSession = vi.fn().mockResolvedValue({ data: { session: { user: { id: 'user-1' } } } })
   userRef = ref<typeof SESSION_CLAIMS | null>(SESSION_CLAIMS)
 
-  const from = vi.fn((table: string) => (table === 'game_rounds' ? roundsTable : playersTable))
+  const from = vi.fn((table: string) => {
+    if (table === 'game_rounds') return roundsTable
+    if (table === 'lobbies') return lobbiesTable
+    return playersTable
+  })
 
   vi.stubGlobal('useSupabaseClient', () => ({
     from,
@@ -141,6 +151,61 @@ describe('useGame — fetchActiveRound', () => {
   })
 })
 
+describe('useGame — fetchGameMeta', () => {
+  it('projette l’hôte et le statut du lobby', async () => {
+    lobbiesTable.result = { data: { host_id: 'user-1', status: 'in_progress' }, error: null }
+    const api = await setup()
+
+    const meta = await api.fetchGameMeta('lobby-1')
+
+    expect(lobbiesTable.eq).toHaveBeenCalledWith('id', 'lobby-1')
+    expect(meta).toEqual({ hostId: 'user-1', status: 'in_progress' })
+  })
+
+  it('reste fail closed sur erreur de lecture (personne n’est hôte)', async () => {
+    lobbiesTable.result = { data: null, error: { code: '42501' } }
+    const api = await setup()
+
+    expect(await api.fetchGameMeta('lobby-1')).toBeNull()
+  })
+})
+
+describe('useGame — nextRound', () => {
+  it('délègue l’avancée au serveur et projette le round suivant', async () => {
+    const api = await setup()
+
+    const result = await api.nextRound('lobby-1')
+
+    expect(rpc).toHaveBeenCalledWith('next_round', { p_lobby_id: 'lobby-1' })
+    expect(result).toEqual({ finished: false, roundId: 'round-2', roundNumber: 4 })
+  })
+
+  it('signale la fin de partie renvoyée au 10ᵉ round', async () => {
+    nextRoundResult = { data: { finished: true }, error: null }
+    const api = await setup()
+
+    expect(await api.nextRound('lobby-1')).toEqual({
+      finished: true,
+      roundId: null,
+      roundNumber: null
+    })
+  })
+
+  it('reste fail closed si le serveur refuse (appelant non-hôte)', async () => {
+    nextRoundResult = { data: null, error: { message: 'Seul l’hôte peut passer au round suivant' } }
+    const api = await setup()
+
+    expect(await api.nextRound('lobby-1')).toBeNull()
+  })
+
+  it('reste fail closed sur exception réseau', async () => {
+    rpc.mockRejectedValueOnce(new Error('network down'))
+    const api = await setup()
+
+    expect(await api.nextRound('lobby-1')).toBeNull()
+  })
+})
+
 describe('useGame — fetchQuestion', () => {
   const QUESTION = {
     round_id: 'round-1',
@@ -165,6 +230,8 @@ describe('useGame — fetchQuestion', () => {
     expect(question).toEqual({
       roundId: 'round-1',
       roundNumber: 3,
+      // started_at pilote le compte à rebours côté page (timer serveur).
+      startedAt: '2026-07-21T10:00:00Z',
       category: 'tech',
       categoryLabel: 'Tech',
       questionText: 'Que signifie le sigle "CPU" ?',

@@ -49,7 +49,12 @@ const makeTable = (): MockTable => {
 
 let roundsTable: MockTable
 let playersTable: MockTable
+let lobbiesTable: MockTable
 let questionResult: { data: unknown, error: unknown }
+// Réponses de get_round_question par round demandé (pour l'enchaînement).
+let questionByRound: Record<string, unknown>
+let nextRoundResult: { data: unknown, error: unknown }
+let rpc: ReturnType<typeof vi.fn>
 let invoke: ReturnType<typeof vi.fn>
 let routeQuery: Record<string, string>
 
@@ -59,18 +64,38 @@ const mountPage = () =>
   })
 
 beforeEach(() => {
+  // Timer figé sur l'instant de départ du round : le décompte part à 10 s et ne
+  // bouge QUE si le test avance explicitement l'horloge. `setImmediate` (que
+  // flushPromises utilise) reste réel, capturé à l'import — non affecté.
+  vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+  vi.setSystemTime(new Date(QUESTION.started_at))
+
   roundsTable = makeTable()
   playersTable = makeTable()
+  lobbiesTable = makeTable()
   playersTable.result = { data: LEADERBOARD, error: null }
+  // Par défaut : je suis l'hôte (métronome), partie en cours.
+  lobbiesTable.result = { data: { host_id: 'user-1', status: 'in_progress' }, error: null }
   questionResult = { data: QUESTION, error: null }
+  questionByRound = {}
+  nextRoundResult = { data: { finished: false, round_id: 'round-2', round_number: 4 }, error: null }
   routeQuery = { round: 'round-1' }
 
   invoke = vi.fn().mockResolvedValue({ data: null, error: null })
 
-  const rpc = vi.fn((name: string) =>
-    Promise.resolve(name === 'get_round_question' ? questionResult : { data: null, error: null })
-  )
-  const from = vi.fn((table: string) => (table === 'game_rounds' ? roundsTable : playersTable))
+  rpc = vi.fn((name: string, args?: { p_round_id?: string }) => {
+    if (name === 'get_round_question') {
+      const row = questionByRound[args?.p_round_id ?? '']
+      return Promise.resolve(row ? { data: row, error: null } : questionResult)
+    }
+    if (name === 'next_round') return Promise.resolve(nextRoundResult)
+    return Promise.resolve({ data: null, error: null })
+  })
+  const from = vi.fn((table: string) => {
+    if (table === 'game_rounds') return roundsTable
+    if (table === 'lobbies') return lobbiesTable
+    return playersTable
+  })
 
   vi.stubGlobal('useSupabaseClient', () => ({
     from,
@@ -84,6 +109,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
 })
 
@@ -279,5 +305,99 @@ describe('Page de jeu — répondre', () => {
     expect(wrapper.find('[role="alert"]').exists()).toBe(true)
     // La réponse n'a pas abouti : les boutons restent actionnables pour réessayer.
     expect(wrapper.findAll('.answer')[0]!.attributes('disabled')).toBeUndefined()
+  })
+})
+
+describe('Page de jeu — compte à rebours (temps serveur)', () => {
+  it('part de la durée pleine, dérivée de started_at', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    // started_at = « maintenant » (horloge figée) → 10 s au départ.
+    expect(wrapper.find('.timer__value').text()).toBe('10')
+    expect(wrapper.find('[role="timer"]').exists()).toBe(true)
+  })
+
+  it('décompte au fil du temps sans repartir d’un compteur local', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    await vi.advanceTimersByTimeAsync(3000)
+    await flushPromises()
+
+    expect(wrapper.find('.timer__value').text()).toBe('7')
+  })
+})
+
+describe('Page de jeu — métronome (hôte)', () => {
+  it('enchaîne automatiquement la question suivante à l’expiration du temps', async () => {
+    questionByRound['round-2'] = {
+      round_id: 'round-2',
+      round_number: 4,
+      started_at: '2026-07-21T10:00:11Z', // nouveau round → décompte plein
+      status: 'active',
+      category: 'tech',
+      question_text: 'Question suivante ?',
+      answers: QUESTION.answers
+    }
+
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.find('.board__progress').text()).toBe('Question 03/10')
+
+    // Les 10 s s'écoulent : l'hôte déclenche next_round, sans action humaine.
+    await vi.advanceTimersByTimeAsync(10_000)
+    await flushPromises()
+
+    expect(rpc).toHaveBeenCalledWith('next_round', { p_lobby_id: 'lobby-1' })
+    expect(wrapper.find('.board__progress').text()).toBe('Question 04/10')
+    expect(wrapper.find('h1').text()).toBe('Question suivante ?')
+    // Nouvelle question → réponses de nouveau actionnables.
+    expect(wrapper.findAll('.answer').every(a => a.attributes('disabled') === undefined)).toBe(true)
+  })
+
+  it('affiche l’écran de fin quand le serveur clôt la partie après le dernier round', async () => {
+    nextRoundResult = { data: { finished: true }, error: null }
+
+    const wrapper = mountPage()
+    await flushPromises()
+
+    await vi.advanceTimersByTimeAsync(10_000)
+    await flushPromises()
+
+    expect(wrapper.findAll('h1')).toHaveLength(1)
+    expect(wrapper.find('h1').text()).toBe('Partie terminée')
+  })
+
+  it('montre directement l’écran de fin si la partie est déjà terminée (rechargement)', async () => {
+    lobbiesTable.result = { data: { host_id: 'user-1', status: 'finished' }, error: null }
+
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.find('h1').text()).toBe('Partie terminée')
+    // Aucune question chargée : on court-circuite sur le statut du lobby.
+    expect(rpc).not.toHaveBeenCalledWith('get_round_question', expect.anything())
+  })
+})
+
+describe('Page de jeu — non-hôte & temps écoulé', () => {
+  it('ne fait pas avancer la partie et verrouille les réponses à l’expiration', async () => {
+    // Je ne suis pas l'hôte : je ne suis pas le métronome.
+    lobbiesTable.result = { data: { host_id: 'user-2', status: 'in_progress' }, error: null }
+
+    const wrapper = mountPage()
+    await flushPromises()
+
+    await vi.advanceTimersByTimeAsync(10_000)
+    await flushPromises()
+
+    // Un non-hôte ne déclenche jamais next_round.
+    expect(rpc).not.toHaveBeenCalledWith('next_round', { p_lobby_id: 'lobby-1' })
+    // La question ne change pas (la bascule synchronisée arrive en 3c).
+    expect(wrapper.find('.board__progress').text()).toBe('Question 03/10')
+    // Temps écoulé : réponses désactivées, et l'expiration est annoncée (pas que visuelle).
+    expect(wrapper.findAll('.answer').every(a => a.attributes('disabled') !== undefined)).toBe(true)
+    expect(wrapper.find('[role="status"]').text()).toContain('Temps écoulé')
   })
 })

@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import {
+  ROUND_DURATION_S,
   TOTAL_ROUNDS,
   answerState,
   formatRoundProgress,
   initialsOf,
+  isLastRound,
   rankPlayers,
+  remainingSeconds,
   type PlayerScore
 } from '~/utils/game'
 
@@ -120,5 +123,65 @@ describe('formatRoundProgress', () => {
 
   it('respecte un total personnalisé', () => {
     expect(formatRoundProgress(3, 5)).toBe('3/5')
+  })
+})
+
+describe('remainingSeconds', () => {
+  // Instant de départ SERVEUR fixe : le temps restant se calcule par rapport à lui,
+  // jamais à un compteur local — c'est ce qui rendra la synchro 3c possible.
+  const START = '2026-07-21T10:00:00.000Z'
+  const t0 = Date.parse(START)
+
+  it('vaut la durée pleine à l’instant du départ', () => {
+    expect(remainingSeconds(START, t0)).toBe(ROUND_DURATION_S)
+    expect(ROUND_DURATION_S).toBe(10)
+  })
+
+  it('décompte selon le temps écoulé depuis started_at', () => {
+    expect(remainingSeconds(START, t0 + 3000)).toBe(7)
+    // Arrondi au supérieur : 0,5 s restante s'affiche « 1 », pas « 0 ».
+    expect(remainingSeconds(START, t0 + 9500)).toBe(1)
+  })
+
+  it('tombe à 0 à l’expiration et n’est jamais négatif', () => {
+    expect(remainingSeconds(START, t0 + 10000)).toBe(0)
+    expect(remainingSeconds(START, t0 + 15000)).toBe(0)
+  })
+
+  it('ne dépasse jamais la durée, même si l’horloge est en avance sur le serveur', () => {
+    // Client légèrement en avance (started_at « dans le futur ») → borné à la durée.
+    expect(remainingSeconds(START, t0 - 4000)).toBe(ROUND_DURATION_S)
+  })
+
+  it('accepte une durée personnalisée', () => {
+    expect(remainingSeconds(START, t0 + 5000, 20)).toBe(15)
+  })
+
+  it('reste fail closed sur une date invalide (temps réputé écoulé)', () => {
+    expect(remainingSeconds('pas-une-date', t0)).toBe(0)
+    expect(remainingSeconds(START, Number.NaN)).toBe(0)
+  })
+})
+
+describe('isLastRound', () => {
+  it('reconnaît le dernier round de la partie', () => {
+    expect(isLastRound(TOTAL_ROUNDS)).toBe(true)
+    expect(isLastRound(9)).toBe(false)
+  })
+
+  it('considère tout numéro au-delà du total comme terminal (fail closed)', () => {
+    expect(isLastRound(11)).toBe(true)
+  })
+
+  it('respecte un total personnalisé', () => {
+    expect(isLastRound(5, 5)).toBe(true)
+    expect(isLastRound(4, 5)).toBe(false)
+  })
+
+  it('tolère les entrées incohérentes sans planter', () => {
+    expect(isLastRound(Number.NaN)).toBe(false)
+    // Numéro décimal : tronqué avant comparaison.
+    expect(isLastRound(9.9)).toBe(false)
+    expect(isLastRound(10.4)).toBe(true)
   })
 })

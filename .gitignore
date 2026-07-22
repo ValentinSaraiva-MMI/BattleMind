@@ -31,3 +31,8 @@ docs
 
 #supabase cli
 supabase/.temp/
+
+# Claude Code memory (notes de travail locales, hors dépôt)
+memory/
+
+
