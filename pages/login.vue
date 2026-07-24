@@ -9,13 +9,11 @@ const user = useSupabaseUser()
 watch(user, () => {
   if (user.value) navigateTo('/')
 }, { immediate: true })
-
-const playersOnline = ref(1248)
 </script>
 
 <template>
   <div class="page">
-    <AppHeader :players-online="playersOnline" />
+    <AppHeader />
 
     <main class="main">
       <div class="main__container">

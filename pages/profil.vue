@@ -154,18 +154,22 @@ const badgePreviews = [1, 2, 3, 4, 5, 6]
             </div>
 
             <div class="progress__tiles">
-              <div class="tile">
-                <span class="tile__icon" aria-hidden="true">
-                  <img src="/icons/battlecoin.svg" alt="" width="28" height="20">
-                </span>
-                <div>
-                  <p class="tile__label">Solde battlecoin</p>
-                  <p class="tile__value">
-                    {{ formatCount(profile.battlecoin_balance) }}
-                    <span class="tile__unit" aria-hidden="true">B</span>
-                    <span class="sr-only">battlecoins</span>
-                  </p>
+              <!-- Monnaie virtuelle sans usage tant que la boutique est hors
+                   périmètre : le solde reste un aperçu décoratif sous voile. -->
+              <div class="stub stub--tile">
+                <div class="tile" aria-hidden="true">
+                  <span class="tile__icon">
+                    <img src="/icons/battlecoin.svg" alt="" width="28" height="20">
+                  </span>
+                  <div>
+                    <p class="tile__label">Solde battlecoin</p>
+                    <p class="tile__value">
+                      {{ formatCount(profile.battlecoin_balance) }}
+                      <span class="tile__unit">B</span>
+                    </p>
+                  </div>
                 </div>
+                <p class="stub__veil">Bientôt disponible</p>
               </div>
 
               <!-- Mode Ranked hors périmètre : aperçu décoratif sous voile. -->

@@ -2,6 +2,9 @@
 type RuleCard = {
   id: string
   icon: string
+  /** Dimensions intrinsèques de l'icône : chaque pictogramme a son propre ratio. */
+  iconWidth: number
+  iconHeight: number
   title: string
   description: string
 }
@@ -19,23 +22,28 @@ const props = withDefaults(
       {
         id: 'vitesse',
         icon: '/icons/timer.svg',
+        iconWidth: 18,
+        iconHeight: 21,
         title: 'Répondez vite',
         description:
           "L'arène ne pardonne pas. Plus vous répondez rapidement, plus votre multiplicateur de score augmente. Dominez le temps."
       },
       {
-        id: 'lorem-1',
-        icon: '/icons/timer.svg',
-        title: 'Lorem ipsum',
-        description:
-          'Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.'
+        id: 'bonus',
+        icon: '/icons/gift.svg',
+        iconWidth: 15,
+        iconHeight: 21,
+        title: 'Débloquez des bonus !',
+        description: 'Enchaînez trois bonnes réponses pour gagner des pouvoirs.'
       },
       {
-        id: 'lorem-2',
-        icon: '/icons/timer.svg',
-        title: 'Dolor sit amet',
+        id: 'podium',
+        icon: '/icons/crown.svg',
+        iconWidth: 22,
+        iconHeight: 20,
+        title: 'Remportez la première place !',
         description:
-          'Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.'
+          'Grimpez dans le classement et décrochez la première place face à tous vos adversaires.'
       }
     ]
   }
@@ -87,7 +95,7 @@ onBeforeUnmount(stop)
         :aria-hidden="index !== activeIndex"
       >
         <span class="card__icon">
-          <img :src="card.icon" alt="" width="18" height="21">
+          <img :src="card.icon" alt="" :width="card.iconWidth" :height="card.iconHeight">
         </span>
         <h3 class="card__title">{{ card.title }}</h3>
         <p class="card__text">{{ card.description }}</p>
@@ -167,9 +175,9 @@ onBeforeUnmount(stop)
   background-color: var(--color-surface);
 }
 
+/* Chaque pictogramme garde son ratio : la taille vient des attributs du gabarit. */
 .card__icon img {
-  width: 18px;
-  height: 21px;
+  flex-shrink: 0;
 }
 
 .card__title {

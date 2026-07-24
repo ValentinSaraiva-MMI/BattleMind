@@ -32,9 +32,6 @@ const formattedBattlecoins = computed(() =>
           <NuxtLink class="nav__link" to="/">Accueil</NuxtLink>
         </li>
         <li>
-          <NuxtLink class="nav__link" to="/classement">Classement</NuxtLink>
-        </li>
-        <li>
           <!-- Boutique hors périmètre : désactivée, jamais un lien mort. -->
           <span class="nav__link nav__link--disabled" aria-disabled="true">
             Shop
