@@ -27,7 +27,7 @@ describe('HubNav', () => {
 
     expect(nav.attributes('aria-label')).toBe('Navigation principale')
     const hrefs = nav.findAll('a').map(a => a.attributes('href'))
-    expect(hrefs).toEqual(['/', '/classement', '/profil'])
+    expect(hrefs).toEqual(['/', '/profil'])
   })
 
   it('affiche le Shop désactivé avec la mention « Bientôt disponible » (hors périmètre)', () => {

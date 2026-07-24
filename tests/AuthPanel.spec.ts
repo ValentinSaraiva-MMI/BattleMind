@@ -91,13 +91,16 @@ describe('AuthPanel', () => {
     expect(inscriptionTab.attributes('aria-selected')).toBe('true')
   })
 
-  it("propose « Jouer en tant qu'invité » seulement en connexion", async () => {
+  it("n'offre que Discord comme alternative, sur les deux onglets", async () => {
     const wrapper = mount(AuthPanel, { global })
 
-    expect(wrapper.text()).toContain("Jouer en tant qu'invité")
+    expect(wrapper.text()).toContain('Continuer avec Discord')
+    // Le mode invité a été retiré : aucune session anonyme n'est proposée.
+    expect(wrapper.text()).not.toContain("Jouer en tant qu'invité")
 
     await wrapper.findAll('[role="tab"]')[1]!.trigger('click')
 
+    expect(wrapper.text()).toContain('Continuer avec Discord')
     expect(wrapper.text()).not.toContain("Jouer en tant qu'invité")
   })
 

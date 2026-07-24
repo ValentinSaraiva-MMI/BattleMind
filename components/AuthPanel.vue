@@ -269,10 +269,6 @@ const onDiscord = async () => {
           <img class="button__icon" src="/icons/discord.svg" alt="" width="16" height="16">
           Continuer avec Discord
         </button>
-        <button v-if="activeTab === 'connexion'" class="button button--ghost" type="button">
-          <img class="button__icon button__icon--sm" src="/icons/guest.svg" alt="" width="12" height="12">
-          Jouer en tant qu'invité
-        </button>
       </div>
     </div>
   </section>
@@ -464,11 +460,6 @@ const onDiscord = async () => {
   width: 16px;
   height: 16px;
   flex-shrink: 0;
-}
-
-.button__icon--sm {
-  width: 12px;
-  height: 12px;
 }
 
 .divider {

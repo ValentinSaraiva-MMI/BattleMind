@@ -1,16 +1,13 @@
 <script setup lang="ts">
-defineProps<{
-  playersOnline: number
-}>()
-
- </script>
+// En-tête des écrans publics (connexion) : le logo seul, aucune action.
+// Le symbole est décoratif — le logotype porte le nom accessible « Battlemind ».
+</script>
 
 <template>
   <header class="header">
-    <div class="logo" />
-    <div class="players">
-      <span class="players__dot" />
-      <span class="players__label">{{ playersOnline }} joueurs en ligne</span>
+    <div class="logo">
+      <img class="logo__symbol" src="/icons/logo-symbole.svg" alt="" width="46" height="35">
+      <img class="logo__wordmark" src="/icons/logo-texte.svg" alt="Battlemind" width="92" height="14">
     </div>
   </header>
 </template>
@@ -27,34 +24,20 @@ defineProps<{
 }
 
 .logo {
-  width: 160px;
-  height: 40px;
-  border-radius: var(--radius);
-  background-color: var(--color-secondary);
-}
-
-.players {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 17px;
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius);
-  background-color: var(--color-surface-overlay);
+  gap: 8px;
 }
 
-.players__dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 9999px;
-  background-color: var(--color-accent);
+.logo__symbol {
+  width: 46px;
+  height: 35px;
+  flex-shrink: 0;
 }
 
-.players__label {
-  color: var(--color-text-muted);
-  font-size: var(--text-md);
-  font-weight: var(--weight-medium);
-  line-height: 20px;
-  white-space: nowrap;
+.logo__wordmark {
+  width: 92px;
+  height: 14px;
+  flex-shrink: 0;
 }
 </style>

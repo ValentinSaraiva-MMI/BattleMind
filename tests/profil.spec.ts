@@ -216,8 +216,19 @@ describe('page profil — restitution des données réelles', () => {
     expect(wrapper.text()).toContain('250 / 500 XP')
   })
 
-  it('affiche le solde battlecoin du profil', async () => {
-    expect((await mountLoaded()).text()).toContain('1,250')
+  // Boutique hors périmètre : le solde n'a aucun usage, il passe sous voile.
+  it('voile le solde battlecoin et le masque aux technologies d’assistance', async () => {
+    const wrapper = await mountLoaded()
+    const tiles = wrapper.findAll('.stub--tile')
+
+    expect(tiles).toHaveLength(2)
+
+    const balance = tiles[0]!
+    expect(balance.text()).toContain('Solde battlecoin')
+    // L'aperçu reste alimenté par le vrai profil, jamais par une valeur en dur.
+    expect(balance.text()).toContain('1,250')
+    expect(balance.get('.tile').attributes('aria-hidden')).toBe('true')
+    expect(balance.get('.stub__veil').text()).toBe('Bientôt disponible')
   })
 
   it('affiche les 4 statistiques de carrière', async () => {
