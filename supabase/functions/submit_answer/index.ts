@@ -13,6 +13,15 @@ Deno.serve(async (req) => {
     return new Response('ok', { headers: corsHeaders })
   }
 
+  // --- Sonde de disponibilité : GET anonyme, aucun effet de bord ---
+  if (req.method === 'GET') {
+    return json(
+      { status: 'ok', function: 'submit_answer', timestamp: new Date().toISOString() },
+      200,
+      { ...corsHeaders, 'Cache-Control': 'no-store' },
+    )
+  }
+
   try {
     // --- 1. Identifier le joueur À PARTIR DE SON JWT, jamais d'un id envoyé ---
     // Le client transmet son jeton de session dans l'en-tête Authorization.

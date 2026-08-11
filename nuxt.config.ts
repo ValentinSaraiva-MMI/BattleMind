@@ -4,6 +4,12 @@ export default defineNuxtConfig({
   devtools: { enabled: true },
   css: ['~/assets/css/main.css'],
 
+  runtimeConfig: {
+    public: {
+      commitSha: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) || 'dev',
+    },
+  },
+
   modules: ['@nuxt/eslint', '@nuxt/fonts', '@nuxt/icon', '@nuxt/image', '@nuxtjs/supabase'],
 
   supabase: {
