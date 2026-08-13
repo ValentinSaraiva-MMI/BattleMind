@@ -1,10 +1,13 @@
 # BattleMind
 
+[![Uptime](https://uptime.betterstack.com/status-badges/v1/monitor/2uvbv.svg)](https://uptime.betterstack.com/?utm_source=status_badge)
+
+
 Quiz multijoueur temps réel de type *Battle Royale*. Les joueurs se retrouvent dans un
 lobby (public ou privé via code), répondent à des questions synchronisées entre tous les
 clients, et gagnent de l'XP à l'issue de la partie.
 
-Projet de certification **RNCP 39583 — Bloc 2**.
+Projet de certification **RNCP 39583 Bloc 2 et 4**.
 
 ## Stack
 

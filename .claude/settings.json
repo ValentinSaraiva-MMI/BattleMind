@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(npx vitest run tests/AppFooter.spec.ts tests/results-page.spec.ts tests/default-layout.spec.ts 2>&1)"
+    ]
+  }
+}

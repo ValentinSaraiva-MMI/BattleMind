@@ -61,10 +61,15 @@ describe('AppFooter', () => {
     expect(wrapper.findAll('img').map(img => img.attributes('alt'))).toEqual(['', 'Battlemind'])
   })
 
+  // Le signalement est le SEUL lien admis : il pointe vers un formulaire réel.
+  // Aucun lien légal ou de contact ne doit revenir tant qu'il serait sans cible
+  // (pas de lien mort, cf. hors périmètre).
   it('ne propose plus de liens légaux ni de contact', () => {
     const wrapper = mount(AppFooter, { global })
+    const links = wrapper.findAll('a')
 
-    expect(wrapper.findAll('a')).toHaveLength(0)
+    expect(links).toHaveLength(1)
+    expect(links[0]!.attributes('href')).toBe('https://tally.so/r/obNzoX')
     expect(wrapper.find('nav').exists()).toBe(false)
   })
 })
