@@ -7,7 +7,15 @@ import { splitStandings, xpForScore, ordinalFr, type RankedPlayer } from '~/util
 const REPLAY_ERROR = 'Impossible de relancer la partie. Réessaie dans un instant.'
 
 const route = useRoute()
+const config = useRuntimeConfig()
 const lobbyId = computed(() => String(route.params.id ?? ''))
+
+// Signalement d'anomalie : le formulaire est pré-rempli avec la version déployée
+// et le salon concerné, pour rattacher le signalement à une partie précise.
+const reportUrl = computed(() =>
+  `https://tally.so/r/obNzoX?version=${encodeURIComponent(config.public.commitSha)}`
+  + `&lobby=${encodeURIComponent(lobbyId.value)}`
+)
 
 const { resolveUserId, fetchGameMeta, fetchLeaderboard, finishGame, resetLobby } = useGame()
 const { leaveLobby, subscribeToLobbyStatus, unsubscribeLobbyPlayers } = useLobby()
@@ -204,6 +212,18 @@ const onHome = async () => {
           </li>
         </ol>
       </section>
+
+      <!-- Signalement : lien secondaire, volontairement en retrait de « Rejouer ».
+           L'ouverture dans un nouvel onglet est annoncée (RGAA 13.1). -->
+      <a
+        class="report"
+        :href="reportUrl"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        Un problème pendant la partie ?
+        <span class="sr-only">(nouvel onglet)</span>
+      </a>
     </div>
   </main>
 </template>
@@ -544,6 +564,25 @@ const onHome = async () => {
   letter-spacing: 0.5px;
   line-height: 15px;
   text-transform: uppercase;
+}
+
+/* --- Signalement -------------------------------------------------------- */
+
+/* Volontairement secondaire : petit, gris atténué (7,6:1 sur le fond, RGAA 3.2),
+   sans fond ni bordure — il ne concurrence pas le bouton « Rejouer ».
+   Souligné en permanence : le repère ne tient pas à la seule couleur (RGAA 3.1).
+   Le focus visible vient de la règle globale :focus-visible. */
+.report {
+  color: var(--color-text-muted);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  line-height: 16px;
+  text-decoration: underline;
+}
+
+.report:hover {
+  color: var(--color-text);
 }
 
 /* --- États -------------------------------------------------------------- */

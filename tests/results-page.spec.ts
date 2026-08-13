@@ -86,6 +86,7 @@ beforeEach(() => {
   }))
   vi.stubGlobal('useSupabaseUser', () => ref({ sub: currentUser }))
   vi.stubGlobal('useRoute', () => ({ params: { id: 'lobby-1' } }))
+  vi.stubGlobal('useRuntimeConfig', () => ({ public: { commitSha: 'abc1234' } }))
   vi.stubGlobal('useHead', () => {})
   vi.stubGlobal('navigateTo', navigateToMock)
 })
@@ -192,6 +193,51 @@ describe('Page résultats — actions', () => {
 
     expect(playersTable.delete).toHaveBeenCalled()
     expect(navigateToMock).toHaveBeenCalledWith('/')
+  })
+})
+
+describe('Page résultats — signalement', () => {
+  it('pré-remplit le formulaire avec la version et le salon', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const href = wrapper.find('.report').attributes('href')!
+    const params = new URL(href).searchParams
+
+    expect(href.startsWith('https://tally.so/r/obNzoX?')).toBe(true)
+    expect(params.get('version')).toBe('abc1234')
+    expect(params.get('lobby')).toBe('lobby-1')
+  })
+
+  it('encode l’identifiant de salon issu de l’URL', async () => {
+    vi.stubGlobal('useRoute', () => ({ params: { id: 'lobby-1&version=pirate' } }))
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const params = new URL(wrapper.find('.report').attributes('href')!).searchParams
+
+    // L'identifiant reste une seule valeur : pas d'injection de paramètre.
+    expect(params.get('lobby')).toBe('lobby-1&version=pirate')
+    expect(params.get('version')).toBe('abc1234')
+  })
+
+  it('ouvre le formulaire dans un nouvel onglet, sans fuite d’opener', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const link = wrapper.find('.report')
+    expect(link.attributes('target')).toBe('_blank')
+    expect(link.attributes('rel')).toBe('noopener noreferrer')
+  })
+
+  it('annonce l’ouverture dans un nouvel onglet dans le nom accessible', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const link = wrapper.find('.report')
+    // Le libellé visible est conservé dans le nom accessible (WCAG 2.5.3).
+    expect(link.text()).toContain('Un problème pendant la partie ?')
+    expect(link.find('.sr-only').text()).toBe('(nouvel onglet)')
   })
 })
 
