@@ -50,12 +50,6 @@ Deno.serve(async (req) => {
       Deno.env.get('BATTLEMIND_SECRET_KEY')!,
     )
 
-     // LOG TEMPORAIRE DE DIAGNOSTIC
-    console.log('URL présente:', !!Deno.env.get('SUPABASE_URL'))
-    console.log('SERVICE_ROLE présente:', !!Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'))
-    console.log('BATTLEMIND_SECRET_KEY présente:', !!Deno.env.get('BATTLEMIND_SECRET_KEY'))
-    console.log('round_id reçu:', round_id)
-
     // --- 4. Récupérer le round (pour la question + l'heure de début) ---
     const { data: round, error: roundError } = await admin
       .from('game_rounds')
@@ -63,12 +57,6 @@ Deno.serve(async (req) => {
       .eq('id', round_id)
       .single()
 
-      
-    // LOG DIAGNOSTIC
-    console.log('round trouvé:', JSON.stringify(round))
-    console.log('erreur requête:', JSON.stringify(roundError))
-
-    
     if (roundError || !round) {
       return json({ error: 'Round introuvable' }, 404, corsHeaders)
     }
