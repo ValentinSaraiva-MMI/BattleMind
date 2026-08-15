@@ -2,6 +2,7 @@
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { useGame, type RoundQuestion, type AnswerResult, NEXT_ROUND_ERROR } from '~/composables/useGame'
 import { useLobby } from '~/composables/useLobby'
+import { useServerTime } from '~/composables/useServerTime'
 import {
   answerState,
   formatRoundProgress,
@@ -39,6 +40,10 @@ const {
 
 // Le suivi du statut du lobby (fin de partie) vit dans useLobby, réutilisé ici.
 const { subscribeToLobbyStatus } = useLobby()
+
+// Le décompte se lit sur l'horloge SERVEUR : une horloge locale en avance
+// amputait la manche d'autant (ANO-028).
+const { sync: syncServerClock, serverNow } = useServerTime()
 
 type PageStatus = 'pending' | 'loaded' | 'error'
 const status = ref<PageStatus>('pending')
@@ -111,7 +116,7 @@ const stopTicker = () => {
 
 const tick = () => {
   if (!question.value) return
-  remaining.value = remainingSeconds(question.value.startedAt, Date.now())
+  remaining.value = remainingSeconds(question.value.startedAt, serverNow())
   if (remaining.value === 0) void onTimeUp()
 }
 
@@ -127,7 +132,7 @@ const applyQuestion = (loaded: RoundQuestion) => {
   outcome.value = null
   lastResult.value = null
   answerError.value = ''
-  remaining.value = remainingSeconds(loaded.startedAt, Date.now())
+  remaining.value = remainingSeconds(loaded.startedAt, serverNow())
 }
 
 /** Rafraîchit le classement (score écrit côté serveur, jamais dérivé localement). */
@@ -181,6 +186,10 @@ let scoresChannel: RealtimeChannel | null = null
 let statusChannel: RealtimeChannel | null = null
 
 onMounted(async () => {
+  // Non attendu : le minuteur ne doit pas dépendre d'un aller-retour réseau.
+  // L'offset mesuré s'applique au top suivant.
+  void syncServerClock()
+
   meId.value = await resolveUserId()
 
   const meta = await fetchGameMeta(lobbyId.value)
@@ -205,7 +214,7 @@ onMounted(async () => {
   }
 
   question.value = loaded
-  remaining.value = remainingSeconds(loaded.startedAt, Date.now())
+  remaining.value = remainingSeconds(loaded.startedAt, serverNow())
   await refreshLeaderboard()
   status.value = 'loaded'
   startTicker()
