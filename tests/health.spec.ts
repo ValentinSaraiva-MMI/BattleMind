@@ -35,6 +35,17 @@ const withLatency = (ms: number) => {
   vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValueOnce(1_000 + ms)
 }
 
+/** Horodatage produit par `now()` côté PostgreSQL, tel que PostgREST le sérialise. */
+const CHECKED_AT = '2026-08-15T09:41:07.123456+00:00'
+
+/** Réponse nominale de health_check : le corps porte le décompte ET `checked_at`. */
+const okResponse = (json: () => Promise<unknown> = () =>
+  Promise.resolve({ status: 'ok', questions: 300, checked_at: CHECKED_AT })) => ({
+  ok: true,
+  status: 200,
+  json,
+})
+
 beforeEach(() => {
   vi.clearAllMocks()
   runtimeConfig = {
@@ -54,7 +65,7 @@ afterEach(() => {
 describe('GET /api/health', () => {
   it('désactive le cache et renvoie la version du build', async () => {
     withLatency(50)
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200 }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse()))
 
     const result = await handler(event)
 
@@ -65,7 +76,7 @@ describe('GET /api/health', () => {
 
   it('interroge la fonction de santé avec la clé anon', async () => {
     withLatency(50)
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 })
+    const fetchMock = vi.fn().mockResolvedValue(okResponse())
     vi.stubGlobal('fetch', fetchMock)
 
     await handler(event)
@@ -78,7 +89,7 @@ describe('GET /api/health', () => {
 
   it('répond "ok" quand la base répond sous le seuil de dégradation', async () => {
     withLatency(120)
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200 }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse()))
 
     const result = await handler(event)
 
@@ -90,12 +101,39 @@ describe('GET /api/health', () => {
 
   it('répond "degraded" au-delà du seuil, sans passer en 503', async () => {
     withLatency(450)
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200 }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse()))
 
     const result = await handler(event)
 
     expect(result.status).toBe('degraded')
     expect(result.db_latency_ms).toBe(450)
+    expect(result.db_error).toBeNull()
+    expect(setResponseStatus).not.toHaveBeenCalled()
+  })
+
+  it('expose le checked_at de PostgreSQL comme référence de temps serveur', async () => {
+    withLatency(50)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse()))
+
+    const result = await handler(event)
+
+    // C'est l'horloge PostgreSQL — celle qui écrit started_at — que les clients
+    // doivent suivre, pas celle du serveur Nuxt (ANO-028).
+    expect(result.db_checked_at).toBe(CHECKED_AT)
+  })
+
+  it('laisse db_checked_at à null sur un corps illisible, sans passer en down', async () => {
+    withLatency(50)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      okResponse(() => Promise.reject(new SyntaxError('Unexpected end of JSON input')))
+    ))
+
+    const result = await handler(event)
+
+    // La base a répondu : c'est un "ok". Seule la référence de temps manque, et
+    // les clients retombent alors sur leur horloge locale.
+    expect(result.status).toBe('ok')
+    expect(result.db_checked_at).toBeNull()
     expect(result.db_error).toBeNull()
     expect(setResponseStatus).not.toHaveBeenCalled()
   })

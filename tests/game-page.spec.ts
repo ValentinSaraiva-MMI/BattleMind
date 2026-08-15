@@ -1,8 +1,17 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { ref } from 'vue'
+import { ref, type Ref } from 'vue'
 import { mount, flushPromises } from '@vue/test-utils'
 import GamePage from '~/pages/game/[id]/index.vue'
+
+/** Équivalent minimal de `useState` de Nuxt : un store clé → ref, isolé par test. */
+const makeUseState = () => {
+  const store = new Map<string, Ref<unknown>>()
+  return <T>(key: string, init?: () => T): Ref<T> => {
+    if (!store.has(key)) store.set(key, ref(init ? init() : null) as Ref<unknown>)
+    return store.get(key) as Ref<T>
+  }
+}
 
 const QUESTION = {
   round_id: 'round-1',
@@ -146,6 +155,12 @@ beforeEach(() => {
   vi.stubGlobal('useRoute', () => ({ params: { id: 'lobby-1' }, query: routeQuery }))
   vi.stubGlobal('useHead', () => {})
   vi.stubGlobal('navigateTo', navigateToMock)
+
+  // `useServerTime()` partage son état via useState : un store neuf par test.
+  vi.stubGlobal('useState', makeUseState())
+  // Sonde de temps serveur alignée sur l'horloge figée du test : écart nul, le
+  // décompte reste dérivé de `started_at` seul.
+  vi.stubGlobal('$fetch', vi.fn(async () => ({ timestamp: new Date().toISOString() })))
 })
 
 afterEach(() => {

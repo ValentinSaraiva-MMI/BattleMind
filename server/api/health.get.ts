@@ -13,6 +13,11 @@
  *
  * La distinction entre "degraded" et "down" sépare le critère de performance du
  * critère de disponibilité : une latence élevée n'est pas une panne.
+ *
+ * La réponse expose aussi db_checked_at, l'horodatage produit par now() côté
+ * PostgreSQL. Il sert de référence de temps serveur aux clients, qui corrigent
+ * ainsi la dérive de leur propre horloge (ANO-028) : le compte à rebours d'une
+ * manche se dérive de started_at, écrit par cette même horloge PostgreSQL.
  */
 
 const DB_TIMEOUT_MS = 5000
@@ -29,6 +34,7 @@ export default defineEventHandler(async (event) => {
   const startedAt = Date.now()
   let dbLatencyMs: number
   let dbError: string | null = null
+  let dbCheckedAt: string | null = null
 
   try {
     const response = await fetch(`${supabaseUrl}/rest/v1/rpc/health_check`, {
@@ -42,6 +48,18 @@ export default defineEventHandler(async (event) => {
     if (!response.ok) {
       const body = await response.text().catch(() => '')
       dbError = `HTTP ${response.status} ${body.slice(0, 200)}`.trim()
+    }
+    else {
+      // Le corps porte l'heure PostgreSQL. Un corps illisible n'est PAS une panne :
+      // la base a répondu, seule la référence de temps manque — la sonde reste ok
+      // et les clients retombent sur leur horloge locale.
+      try {
+        const body = await response.json() as { checked_at?: unknown } | null
+        if (typeof body?.checked_at === 'string') dbCheckedAt = body.checked_at
+      }
+      catch {
+        dbCheckedAt = null
+      }
     }
   }
   catch (error) {
@@ -63,6 +81,7 @@ export default defineEventHandler(async (event) => {
     status,
     db_latency_ms: dbLatencyMs,
     db_error: dbError,
+    db_checked_at: dbCheckedAt,
     version: config.public.commitSha,
     timestamp: new Date().toISOString(),
   }
