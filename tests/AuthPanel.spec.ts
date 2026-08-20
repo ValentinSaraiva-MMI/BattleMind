@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { nextTick } from 'vue'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import AuthPanel from '~/components/AuthPanel.vue'
+import { RESET_EMAIL_SENT_MESSAGE } from '~/utils/authErrors'
 
 // Stub du composant global NuxtLink utilisé par AuthPanel.
 const global = {
@@ -18,6 +19,7 @@ const global = {
 let signInWithPassword: ReturnType<typeof vi.fn>
 let signUp: ReturnType<typeof vi.fn>
 let signInWithOAuth: ReturnType<typeof vi.fn>
+let resetPasswordForEmail: ReturnType<typeof vi.fn>
 let navigateToMock: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
@@ -26,10 +28,11 @@ beforeEach(() => {
   signUp = vi.fn().mockResolvedValue({ data: { session: null }, error: null })
   // OAuth : supabase-js redirige le navigateur ; en test on résout sans erreur.
   signInWithOAuth = vi.fn().mockResolvedValue({ data: { url: 'https://discord.example/oauth' }, error: null })
+  resetPasswordForEmail = vi.fn().mockResolvedValue({ data: {}, error: null })
   navigateToMock = vi.fn()
 
   vi.stubGlobal('useSupabaseClient', () => ({
-    auth: { signInWithPassword, signUp, signInWithOAuth }
+    auth: { signInWithPassword, signUp, signInWithOAuth, resetPasswordForEmail }
   }))
   vi.stubGlobal('navigateTo', navigateToMock)
 })
@@ -178,6 +181,139 @@ describe('AuthPanel', () => {
       const status = wrapper.find('[role="status"]')
       expect(status.exists()).toBe(true)
       expect(status.text()).toContain('Vérifie ta boîte mail')
+    })
+  })
+
+  describe('mot de passe oublié (ANO-029)', () => {
+    const forgotLink = (wrapper: VueWrapper) => wrapper.find('#login-forgot')
+
+    const requestReset = async (wrapper: VueWrapper, email = 'joueur@battlemind.gg') => {
+      if (email) await wrapper.find('#login-email').setValue(email)
+      await forgotLink(wrapper).trigger('click')
+      await flushPromises()
+    }
+
+    it('reprend le libellé de la maquette, sous le champ mot de passe', () => {
+      const wrapper = mount(AuthPanel, { global })
+      const link = forgotLink(wrapper)
+
+      expect(link.text()).toBe('Mot de passe oublié ?')
+
+      // Déclenche une action, pas une navigation → bouton, pas <a> (RGAA 7.1).
+      expect(link.element.tagName).toBe('BUTTON')
+      expect(link.attributes('type')).toBe('button')
+
+      // Ordre de la maquette : mot de passe, puis le lien, puis « Se connecter ».
+      const panel = wrapper.find('#panel-connexion').element
+      const order = [...panel.querySelectorAll('#login-password, #login-forgot, button[type="submit"]')]
+      expect(order.map((el) => el.id || el.getAttribute('type'))).toEqual([
+        'login-password',
+        'login-forgot',
+        'submit'
+      ])
+    })
+
+    it('demande le lien pour l\'adresse saisie, avec retour sur /confirm?type=recovery', async () => {
+      const wrapper = mount(AuthPanel, { global })
+
+      await requestReset(wrapper)
+
+      expect(resetPasswordForEmail).toHaveBeenCalledTimes(1)
+      const [email, options] = resetPasswordForEmail.mock.calls[0]!
+      expect(email).toBe('joueur@battlemind.gg')
+      // Le marqueur est le seul discriminant de ce retour en flux PKCE.
+      expect(options.redirectTo).toMatch(/\/confirm\?type=recovery$/)
+    })
+
+    it('affiche un message neutre en cas de succès', async () => {
+      const wrapper = mount(AuthPanel, { global })
+
+      await requestReset(wrapper)
+
+      const status = wrapper.find('#panel-connexion [role="status"]')
+      expect(status.exists()).toBe(true)
+      expect(status.text()).toBe(RESET_EMAIL_SENT_MESSAGE)
+    })
+
+    it('affiche le MÊME message quand Supabase renvoie une erreur', async () => {
+      // Pas d'oracle d'énumération : l'issue ne doit pas transparaître.
+      resetPasswordForEmail.mockResolvedValue({ data: null, error: { code: 'user_not_found' } })
+      const wrapper = mount(AuthPanel, { global })
+
+      await requestReset(wrapper)
+
+      expect(wrapper.find('#panel-connexion [role="status"]').text()).toBe(RESET_EMAIL_SENT_MESSAGE)
+      expect(wrapper.find('#panel-connexion [role="alert"]').exists()).toBe(false)
+    })
+
+    it('affiche le MÊME message quand l\'appel réseau échoue', async () => {
+      resetPasswordForEmail.mockRejectedValue(new Error('network down'))
+      const wrapper = mount(AuthPanel, { global })
+
+      await requestReset(wrapper)
+
+      expect(wrapper.find('#panel-connexion [role="status"]').text()).toBe(RESET_EMAIL_SENT_MESSAGE)
+      expect(wrapper.find('#panel-connexion [role="alert"]').exists()).toBe(false)
+    })
+
+    it('ne traduit jamais l\'erreur Supabase en message utilisateur', async () => {
+      resetPasswordForEmail.mockResolvedValue({ data: null, error: { code: 'over_email_send_rate_limit' } })
+      const wrapper = mount(AuthPanel, { global })
+
+      await requestReset(wrapper)
+
+      // mapAuthError produirait « Trop de mails envoyés. » : ce serait révélateur.
+      expect(wrapper.find('#panel-connexion').text()).not.toContain('Trop de mails envoyés')
+    })
+
+    it('réclame l\'adresse avant tout appel réseau si le champ est vide', async () => {
+      const wrapper = mount(AuthPanel, { global })
+
+      await requestReset(wrapper, '')
+
+      expect(resetPasswordForEmail).not.toHaveBeenCalled()
+
+      const alert = wrapper.find('#panel-connexion [role="alert"]')
+      expect(alert.exists()).toBe(true)
+      expect(alert.attributes('id')).toBe('login-error')
+      expect(alert.text()).toContain('Saisis ton adresse email')
+    })
+
+    it('décrit l\'action du bouton pour les lecteurs d\'écran', () => {
+      const wrapper = mount(AuthPanel, { global })
+      const describedBy = forgotLink(wrapper).attributes('aria-describedby')
+
+      expect(describedBy).toBe('login-forgot-hint')
+      expect(wrapper.find('#login-forgot-hint').text()).toContain('lien de réinitialisation')
+    })
+
+    it('désactive le bouton pendant la requête', async () => {
+      let resolvePending: (value: unknown) => void = () => {}
+      resetPasswordForEmail.mockReturnValue(new Promise((resolve) => {
+        resolvePending = resolve
+      }))
+      const wrapper = mount(AuthPanel, { global })
+
+      await wrapper.find('#login-email').setValue('joueur@battlemind.gg')
+      await forgotLink(wrapper).trigger('click')
+      await nextTick()
+
+      expect(forgotLink(wrapper).attributes('disabled')).toBeDefined()
+
+      resolvePending({ data: {}, error: null })
+      await flushPromises()
+    })
+
+    it('efface le message au changement d\'onglet', async () => {
+      const wrapper = mount(AuthPanel, { global })
+
+      await requestReset(wrapper)
+      expect(wrapper.find('#panel-connexion [role="status"]').exists()).toBe(true)
+
+      await wrapper.findAll('[role="tab"]')[1]!.trigger('click')
+      await wrapper.findAll('[role="tab"]')[0]!.trigger('click')
+
+      expect(wrapper.find('#panel-connexion [role="status"]').exists()).toBe(false)
     })
   })
 

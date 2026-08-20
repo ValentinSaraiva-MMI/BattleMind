@@ -1,4 +1,4 @@
-import { mapAuthError } from '~/utils/authErrors'
+import { mapAuthError, PASSWORD_UPDATED_MESSAGE, RESET_EMAIL_SENT_MESSAGE } from '~/utils/authErrors'
 
 // Couche fine autour de Supabase Auth : isole les appels réseau et centralise
 // l'état (chargement, messages, redirection). Logique pure : ~/utils/authErrors.
@@ -102,5 +102,50 @@ export function useAuth() {
     }
   }
 
-  return { loading, errorMessage, infoMessage, signIn, signUp, signInWithDiscord }
+  /* Demande l'envoi d'un lien de réinitialisation (ANO-029).*/
+  const requestPasswordReset = async (email: string): Promise<void> => {
+    loading.value = true
+    reset()
+    try {
+      await supabase.auth.resetPasswordForEmail(email, {
+        // URL à autoriser dans Supabase (Redirect URLs), motif `.../confirm*`.
+        redirectTo: `${window.location.origin}/confirm?type=recovery`
+      })
+    } catch {
+      // Volontairement avalé : l'issue ne doit pas transparaître (cf. plus haut).
+    }
+    infoMessage.value = RESET_EMAIL_SENT_MESSAGE
+    loading.value = false
+  }
+
+  const updatePassword = async (password: string): Promise<boolean> => {
+    loading.value = true
+    reset()
+    try {
+      const { error } = await supabase.auth.updateUser({ password })
+      if (error) {
+        errorMessage.value = mapAuthError(error)
+        return false
+      }
+      infoMessage.value = PASSWORD_UPDATED_MESSAGE
+      return true
+    } catch (error) {
+      // Fail closed : toute exception réseau devient un message utilisateur sûr.
+      errorMessage.value = mapAuthError(error)
+      return false
+    } finally {
+      loading.value = false
+    }
+  }
+
+  return {
+    loading,
+    errorMessage,
+    infoMessage,
+    signIn,
+    signUp,
+    signInWithDiscord,
+    requestPasswordReset,
+    updatePassword
+  }
 }

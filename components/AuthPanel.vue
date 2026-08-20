@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useAuth } from '~/composables/useAuth'
-import { validateSignupForm } from '~/utils/authErrors'
+import { validateResetRequest, validateSignupForm } from '~/utils/authErrors'
 
 type AuthTab = 'connexion' | 'inscription'
 
@@ -10,12 +10,21 @@ const activeTab = ref<AuthTab>('connexion')
 const login = reactive({ email: '', password: '' })
 const signup = reactive({ pseudo: '', email: '', password: '', passwordConfirm: '' })
 
-const { loading, errorMessage, infoMessage, signIn, signUp, signInWithDiscord } = useAuth()
+const {
+  loading,
+  errorMessage,
+  infoMessage,
+  signIn,
+  signUp,
+  signInWithDiscord,
+  requestPasswordReset
+} = useAuth()
 
-// Validation client (mots de passe), distincte des erreurs serveur.
+// Validation client (mots de passe, adresse manquante), distincte des erreurs serveur.
 const clientError = ref('')
 
-// Sur inscription, la validation client prime sur l'erreur serveur.
+// Sur les deux onglets, la validation client prime sur l'erreur serveur.
+const loginError = computed(() => clientError.value || errorMessage.value)
 const signupError = computed(() => clientError.value || errorMessage.value)
 
 // Un changement d'onglet efface les messages (pas de fuite entre formulaires).
@@ -65,7 +74,22 @@ const onTabKeydown = (event: KeyboardEvent) => {
 }
 
 const onSubmitLogin = async () => {
+  clientError.value = ''
   await signIn(login.email, login.password)
+}
+
+const onForgotPassword = async () => {
+  clientError.value = ''
+  errorMessage.value = ''
+  infoMessage.value = ''
+
+  const validationError = validateResetRequest(login.email)
+  if (validationError) {
+    clientError.value = validationError
+    return
+  }
+
+  await requestPasswordReset(login.email)
 }
 
 const onSubmitSignup = async () => {
@@ -145,8 +169,8 @@ const onDiscord = async () => {
             placeholder="Email"
             autocomplete="email"
             required
-            :aria-invalid="errorMessage ? 'true' : undefined"
-            :aria-describedby="errorMessage ? 'login-error' : undefined"
+            :aria-invalid="loginError ? 'true' : undefined"
+            :aria-describedby="loginError ? 'login-error' : undefined"
           >
           <label class="sr-only" for="login-password">Mot de passe (obligatoire)</label>
           <input
@@ -157,14 +181,32 @@ const onDiscord = async () => {
             placeholder="Mot de passe"
             autocomplete="current-password"
             required
-            :aria-invalid="errorMessage ? 'true' : undefined"
-            :aria-describedby="errorMessage ? 'login-error' : undefined"
+            :aria-invalid="loginError ? 'true' : undefined"
+            :aria-describedby="loginError ? 'login-error' : undefined"
           >
-          <p v-if="errorMessage" id="login-error" class="form__error" role="alert">
+          <div class="form__aside">
+            <button
+              id="login-forgot"
+              class="link"
+              type="button"
+              :disabled="loading"
+              aria-describedby="login-forgot-hint"
+              @click="onForgotPassword"
+            >
+              Mot de passe oublié ?
+            </button>
+          </div>
+          <p id="login-forgot-hint" class="sr-only">
+            Un lien de réinitialisation sera envoyé à l'adresse saisie dans le champ Adresse email.
+          </p>
+          <p v-if="loginError" id="login-error" class="form__error" role="alert">
             <svg class="form__error-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
               <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
             </svg>
-            {{ errorMessage }}
+            {{ loginError }}
+          </p>
+          <p v-if="infoMessage" id="login-info" class="form__info" role="status">
+            {{ infoMessage }}
           </p>
           <button
             class="button button--primary"
@@ -394,18 +436,34 @@ const onDiscord = async () => {
   justify-content: flex-end;
 }
 
+/* Rendu « lien » (maquette : 12px, texte atténué) sur un <button>. */
 .link {
+  padding: 0;
+  border: 0;
+  background: none;
   color: var(--color-text-muted);
+  font-family: inherit;
   font-size: var(--text-sm);
   font-weight: var(--weight-medium);
   line-height: 20px;
   text-decoration: none;
+  cursor: pointer;
   transition: color 0.15s ease;
 }
 
 .link:hover,
 .link:focus-visible {
   color: var(--color-text);
+}
+
+/* État désactivé (pendant une requête) : exempté de contraste (RGAA 3.2). */
+.link:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.link:disabled:hover {
+  color: var(--color-text-muted);
 }
 
 .button {
