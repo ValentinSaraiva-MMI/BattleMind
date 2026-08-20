@@ -3,8 +3,10 @@ import {
   mapAuthError,
   validatePassword,
   validatePasswordsMatch,
+  validateResetRequest,
   validateSignupForm,
-  MIN_PASSWORD_LENGTH
+  MIN_PASSWORD_LENGTH,
+  RESET_EMAIL_SENT_MESSAGE
 } from '~/utils/authErrors'
 
 describe('mapAuthError', () => {
@@ -71,5 +73,27 @@ describe('validateSignupForm', () => {
 
   it('retourne null quand le formulaire est valide', () => {
     expect(validateSignupForm({ password: '123456', passwordConfirm: '123456' })).toBeNull()
+  })
+})
+
+describe('validateResetRequest', () => {
+  it('réclame une adresse quand le champ est vide', () => {
+    expect(validateResetRequest('')).toContain('Saisis ton adresse email')
+  })
+
+  it('ne considère pas des espaces comme une adresse', () => {
+    expect(validateResetRequest('   ')).toContain('Saisis ton adresse email')
+  })
+
+  it('laisse passer une adresse renseignée (le serveur reste seul juge du format)', () => {
+    expect(validateResetRequest('joueur@battlemind.gg')).toBeNull()
+  })
+})
+
+describe('RESET_EMAIL_SENT_MESSAGE', () => {
+  it('reste neutre : ne confirme jamais l\'existence du compte (énumération)', () => {
+    expect(RESET_EMAIL_SENT_MESSAGE).toBe(
+      "Si un compte existe pour cette adresse, un lien de réinitialisation vient d'être envoyé."
+    )
   })
 })

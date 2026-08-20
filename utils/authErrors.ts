@@ -16,6 +16,11 @@ export interface SignupInput {
 export const MIN_PASSWORD_LENGTH = 6
 
 const GENERIC_MESSAGE = 'Une erreur est survenue. Réessaie dans un instant.'
+export const RESET_EMAIL_SENT_MESSAGE
+  = "Si un compte existe pour cette adresse, un lien de réinitialisation vient d'être envoyé."
+
+/** Confirmation d'un changement de mot de passe réussi. */
+export const PASSWORD_UPDATED_MESSAGE = 'Mot de passe mis à jour.'
 
 // Messages FR indexés par le `code` stable de Supabase (auth v2).
 const MESSAGES_BY_CODE: Record<string, string> = {
@@ -65,4 +70,11 @@ export function validatePasswordsMatch(password: string, confirm: string): strin
 // Retourne le premier message d'erreur, ou null si le formulaire est valide.
 export function validateSignupForm(input: SignupInput): string | null {
   return validatePassword(input.password) ?? validatePasswordsMatch(input.password, input.passwordConfirm)
+}
+
+export function validateResetRequest(email: string): string | null {
+  if (!email.trim()) {
+    return 'Saisis ton adresse email pour recevoir un lien de réinitialisation.'
+  }
+  return null
 }
