@@ -16,13 +16,13 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@nuxt/eslint": "^1.2.0",
-    "@nuxt/fonts": "^0.11.0",
+    "@nuxt/eslint": "^1.17.0",
+    "@nuxt/fonts": "^0.14.0",
     "@nuxt/icon": "^1.11.0",
-    "@nuxtjs/supabase": "^2.0.9",
+    "@nuxtjs/supabase": "^2.0.10",
     "eslint": "^9.23.0",
     "nuxt": "^3.21.8",
-    "vue": "^3.5.13",
+    "vue": "^3.5.41",
     "vue-router": "^4.5.0"
   },
   "devDependencies": {
