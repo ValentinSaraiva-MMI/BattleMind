@@ -184,7 +184,11 @@ onUnmounted(() => {
                   :value="option.value"
                   :disabled="pending"
                 >
-                <img :src="option.icon" alt="" width="20" height="20">
+                <span
+                  class="theme__icon"
+                  :style="{ '--theme-icon': `url('${option.icon}')` }"
+                  aria-hidden="true"
+                />
                 <span class="theme__label">{{ option.short }}</span>
               </label>
             </div>
@@ -423,6 +427,16 @@ onUnmounted(() => {
   color: var(--color-text-muted);
   cursor: pointer;
   transition: border-color 0.15s ease;
+}
+
+.theme__icon {
+  display: block;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  background-color: currentColor;
+  -webkit-mask: var(--theme-icon) center / contain no-repeat;
+  mask: var(--theme-icon) center / contain no-repeat;
 }
 
 .theme__label {
