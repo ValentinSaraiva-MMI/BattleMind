@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import CreateLobbyModal from '~/components/CreateLobbyModal.vue'
+import { LOBBY_CATEGORIES } from '~/utils/lobby'
 
 /** `attachTo` est indispensable : sans DOM réel, `document.activeElement` ne bouge pas. */
 const mountModal = (props: Record<string, unknown> = {}) =>
@@ -124,6 +125,43 @@ describe('CreateLobbyModal — formulaire accessible', () => {
     expect(access.attributes('aria-checked')).toBe('false')
     // Statut jamais porté par la seule couleur (RGAA 3.1).
     expect(wrapper!.find('#lobby-access-state').text()).toBe('Privé')
+  })
+})
+
+describe('CreateLobbyModal — pictogrammes de thème', () => {
+  beforeEach(() => {
+    wrapper = mountModal()
+  })
+
+  const icons = () => wrapper!.findAll('.theme__icon')
+
+  // RGAA 1.2 : le pictogramme est décoratif, seul `theme__label` porte le thème.
+  it('garde les pictogrammes hors du parcours des technologies d’assistance', () => {
+    expect(icons()).toHaveLength(LOBBY_CATEGORIES.length)
+
+    for (const icon of icons()) {
+      expect(icon.attributes('aria-hidden')).toBe('true')
+      expect(icon.text()).toBe('')
+      // Aucune alternative résiduelle ne doit les ramener dans le parcours.
+      for (const attribute of ['alt', 'aria-label', 'title', 'role']) {
+        expect(icon.attributes(attribute)).toBeUndefined()
+      }
+    }
+
+    // Plus aucune image dans le groupe : un `<img>` ne se laisserait pas colorer.
+    expect(wrapper!.find('fieldset').findAll('img')).toHaveLength(0)
+  })
+
+  // Le tracé vient du fichier déclaré dans le modèle, jamais d'une copie locale.
+  it('masque chaque carte avec le SVG déclaré dans LOBBY_CATEGORIES', () => {
+    LOBBY_CATEGORIES.forEach((option, index) => {
+      const icon = icons()[index]!
+
+      expect(icon.attributes('style')).toContain(`url('${option.icon}')`)
+      // Une seule règle générique : `contain` inscrit chaque ratio dans la même
+      // boîte carrée, sans classe par catégorie à tenir à jour avec les viewBox.
+      expect(icon.classes()).toEqual(['theme__icon'])
+    })
   })
 })
 

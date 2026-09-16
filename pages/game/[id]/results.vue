@@ -145,7 +145,7 @@ const onHome = async () => {
           :disabled="pending"
           @click="onReplay"
         >
-          <img src="/icons/sync.svg" alt="" width="14" height="14">
+          <span class="button__icon button__icon--sync" aria-hidden="true" />
           Rejouer
         </button>
 
@@ -301,6 +301,20 @@ const onHome = async () => {
   text-decoration: none;
   cursor: pointer;
   transition: filter 0.15s ease;
+}
+
+.button__icon {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  background-color: currentColor;
+  -webkit-mask: center / contain no-repeat;
+  mask: center / contain no-repeat;
+}
+
+.button__icon--sync {
+  -webkit-mask-image: url('/icons/sync.svg');
+  mask-image: url('/icons/sync.svg');
 }
 
 .button--primary {
