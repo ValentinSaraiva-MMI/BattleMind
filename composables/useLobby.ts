@@ -15,7 +15,7 @@ export interface CreateLobbyInput {
   category: LobbyCategory
   access: LobbyAccess
   maxPlayers: number
-  powerupsEnabled: boolean
+  powerupsEnabled?: boolean
 }
 
 /** Ligne `lobby_players` enrichie du profil, telle qu'affichée dans le salon. */
@@ -151,7 +151,7 @@ export function useLobby() {
           category: input.category,
           access: input.access,
           max_players: input.maxPlayers,
-          powerups_enabled: input.powerupsEnabled,
+          powerups_enabled: input.powerupsEnabled ?? true,
           host_id: userId
         })
         .select('id')

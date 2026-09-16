@@ -191,7 +191,9 @@ describe('useGame — fetchGameMeta', () => {
       hostId: 'user-1',
       status: 'in_progress',
       name: 'Neon Protocol',
-      categoryLabel: 'Tech'
+      categoryLabel: 'Tech',
+      powerupsEnabled: false,
+      phaseStartedAt: null
     })
   })
 
@@ -298,7 +300,8 @@ describe('useGame — fetchQuestion', () => {
       category: 'tech',
       categoryLabel: 'Tech',
       questionText: 'Que signifie le sigle "CPU" ?',
-      answers: QUESTION.answers
+      answers: QUESTION.answers,
+      disabledKeys: []
     })
   })
 

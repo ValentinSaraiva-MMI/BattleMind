@@ -32,9 +32,11 @@
 
   --color-secondary: var(--salmon-500);
   --color-success: var(--green-500);
+  --color-success-subtle: rgb(52 211 153 / 0.25);
   --color-danger: var(--red-500);
   /* Fond des boutons destructifs : --color-danger ne monte qu'à 3,4:1 avec --color-text (RGAA 3.2 exige 4,5:1). */
   --color-danger-strong: var(--red-700);
+  --color-danger-subtle: rgb(239 68 68 / 0.25);
   --color-info: var(--turquoise-500);
 
   /* Voile posé sur les blocs hors périmètre (« Bientôt disponible »). */
