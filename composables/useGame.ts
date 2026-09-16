@@ -17,6 +17,7 @@ export interface RoundQuestion {
   categoryLabel: string
   questionText: string
   answers: Answer[]
+  disabledKeys: string[]
 }
 
 /** État de la partie côté serveur, pour situer le joueur (hôte ? déjà terminée ?). */
@@ -27,6 +28,8 @@ export interface GameMeta {
   /** Nom du salon et thème, pour le sous-titre de l'écran de résultats. */
   name: string
   categoryLabel: string
+  powerupsEnabled: boolean
+  phaseStartedAt: string | null
 }
 
 /** Résultat de `next_round` : soit la partie continue (round suivant), soit elle se termine. */
@@ -150,7 +153,7 @@ export function useGame() {
     try {
       const { data, error } = await supabase
         .from('lobbies')
-        .select('host_id, status, name, category')
+        .select('host_id, status, name, category, powerups_enabled, phase_started_at')
         .eq('id', lobbyId)
         .maybeSingle()
 
@@ -159,6 +162,8 @@ export function useGame() {
         status: GameMeta['status']
         name: string
         category: string
+        powerups_enabled: boolean
+        phase_started_at?: string | null
       } | null
       if (error || !row) return null
 
@@ -166,7 +171,9 @@ export function useGame() {
         hostId: row.host_id,
         status: row.status,
         name: row.name,
-        categoryLabel: categoryLabel(row.category)
+        categoryLabel: categoryLabel(row.category),
+        powerupsEnabled: Boolean(row.powerups_enabled),
+        phaseStartedAt: row.phase_started_at ?? null
       }
     } catch {
       return null
@@ -249,6 +256,7 @@ export function useGame() {
         category: string
         question_text: string
         answers: Answer[] | null
+        disabled_keys?: string[] | null
       }
 
       return {
@@ -258,7 +266,8 @@ export function useGame() {
         category: row.category,
         categoryLabel: categoryLabel(row.category),
         questionText: row.question_text,
-        answers: row.answers ?? []
+        answers: row.answers ?? [],
+        disabledKeys: row.disabled_keys ?? []
       }
     } catch {
       return fail(QUESTION_ERROR)
@@ -299,6 +308,30 @@ export function useGame() {
       return rankPlayers(scores, meId)
     } catch {
       return []
+    }
+  }
+
+  /**
+   * Série de bonnes réponses consécutives du joueur courant dans ce lobby.
+   */
+  const fetchMyStreak = async (lobbyId: string): Promise<number> => {
+    try {
+      const userId = await resolveUserId()
+      if (!userId) return 0
+
+      const { data, error } = await supabase
+        .from('lobby_players')
+        .select('streak')
+        .eq('lobby_id', lobbyId)
+        .eq('user_id', userId)
+        .maybeSingle()
+
+      const row = data as { streak: number | null } | null
+      if (error || !row) return 0
+
+      return row.streak ?? 0
+    } catch {
+      return 0
     }
   }
 
@@ -410,6 +443,7 @@ export function useGame() {
     resetLobby,
     fetchQuestion,
     fetchLeaderboard,
+    fetchMyStreak,
     submitAnswer,
     subscribeToRounds,
     subscribeToScores,

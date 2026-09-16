@@ -2,6 +2,7 @@
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { useGame, type RoundQuestion, type AnswerResult, NEXT_ROUND_ERROR } from '~/composables/useGame'
 import { useLobby } from '~/composables/useLobby'
+import { usePowerups, type ActivePowerup } from '~/composables/usePowerups'
 import { useServerTime } from '~/composables/useServerTime'
 import {
   answerState,
@@ -32,6 +33,7 @@ const {
   nextRound,
   fetchQuestion,
   fetchLeaderboard,
+  fetchMyStreak,
   submitAnswer,
   subscribeToRounds,
   subscribeToScores,
@@ -41,15 +43,37 @@ const {
 // Le suivi du statut du lobby (fin de partie) vit dans useLobby, réutilisé ici.
 const { subscribeToLobbyStatus } = useLobby()
 
+const { fetchActivePowerups, subscribeToLobbyPhase } = usePowerups()
+
 // Le décompte se lit sur l'horloge SERVEUR : une horloge locale en avance
 // amputait la manche d'autant (ANO-028).
 const { sync: syncServerClock, serverNow } = useServerTime()
 
 type PageStatus = 'pending' | 'loaded' | 'error'
 const status = ref<PageStatus>('pending')
+const leavingGame = ref(false)
 
 // Fin de partie : tous les clients basculent sur l'écran de résultats (3d).
-const goToResults = () => navigateTo(`/game/${lobbyId.value}/results`)
+const goToResults = () => {
+  leavingGame.value = true
+  return navigateTo(`/game/${lobbyId.value}/results`)
+}
+
+// Le serveur ouvre la salle de power-up entre deux manches : tous les clients y vont.
+const goToPowerupRoom = () => {
+  leavingGame.value = true
+  return navigateTo(`/game/${lobbyId.value}/powerup`)
+}
+
+const powerupsEnabled = ref(false)
+
+const POWERUP_STREAK_GOAL = 3
+
+const streak = ref(0)
+const streakFilled = computed(() => Math.min(streak.value, POWERUP_STREAK_GOAL))
+const streakReached = computed(() => streak.value >= POWERUP_STREAK_GOAL)
+
+const activePowerups = ref<ActivePowerup[]>([])
 
 const question = ref<RoundQuestion | null>(null)
 const leaderboard = ref<RankedPlayer[]>([])
@@ -94,6 +118,8 @@ useHead({
 /** État visuel d'un bouton une fois la question verrouillée (pur, testé). */
 const stateOf = (key: string) => answerState(key, outcome.value)
 
+const isMasked = (key: string) => question.value?.disabledKeys.includes(key) ?? false
+
 /** Restitution accessible (RGAA 7.4) : verdict et expiration annoncés en zone `status`, pas seulement par la couleur. */
 const resultAnnouncement = computed(() => {
   if (timeUp.value && !answered.value) return 'Temps écoulé. Tu n’as pas répondu à temps.'
@@ -102,6 +128,37 @@ const resultAnnouncement = computed(() => {
   const good = question.value?.answers.find(answer => answer.key === outcome.value!.correctKey)
   return `Mauvaise réponse. La bonne réponse était : ${good?.text ?? outcome.value!.correctKey}.`
 })
+
+const streakAnnouncement = computed(() =>
+  streakReached.value
+    ? `Série de ${streak.value} bonnes réponses : palier de ${POWERUP_STREAK_GOAL} atteint, tirage de power-up débloqué.`
+    : ''
+)
+
+const FOG_CODE = 'fog'
+
+const fogged = ref(false)
+let fogTimer: ReturnType<typeof setTimeout> | null = null
+
+/** Lève le flou et libère le minuteur (changement de manche, démontage). */
+const clearFog = () => {
+  if (fogTimer !== null) {
+    clearTimeout(fogTimer)
+    fogTimer = null
+  }
+  fogged.value = false
+}
+
+const applyFog = () => {
+  clearFog()
+
+  const fog = activePowerups.value.find(effect => effect.code === FOG_CODE)
+  if (!fog) return
+
+  fogged.value = true
+  if (fog.durationS === null) return
+  fogTimer = setTimeout(clearFog, fog.durationS * 1000)
+}
 
 // --- Boucle de jeu : timer + enchaînement --------------------------------
 // On relit `remainingSeconds` à chaque top ; la vérité reste `started_at`.
@@ -132,12 +189,22 @@ const applyQuestion = (loaded: RoundQuestion) => {
   outcome.value = null
   lastResult.value = null
   answerError.value = ''
+  clearFog()
   remaining.value = remainingSeconds(loaded.startedAt, serverNow())
 }
 
 /** Rafraîchit le classement (score écrit côté serveur, jamais dérivé localement). */
 const refreshLeaderboard = async () => {
   leaderboard.value = await fetchLeaderboard(lobbyId.value)
+}
+
+
+const refreshActivePowerups = async () => {
+  if (!powerupsEnabled.value || !question.value) {
+    activePowerups.value = []
+    return
+  }
+  activePowerups.value = await fetchActivePowerups(lobbyId.value, question.value.roundNumber)
 }
 
 /**
@@ -153,6 +220,8 @@ const loadRound = async (roundId: string) => {
   if (!loaded) return
   applyQuestion(loaded)
   await refreshLeaderboard()
+  await refreshActivePowerups()
+  applyFog()
   startTicker()
 }
 
@@ -184,6 +253,7 @@ const onTimeUp = async () => {
 let roundsChannel: RealtimeChannel | null = null
 let scoresChannel: RealtimeChannel | null = null
 let statusChannel: RealtimeChannel | null = null
+let phaseChannel: RealtimeChannel | null = null
 
 onMounted(async () => {
   // Non attendu : le minuteur ne doit pas dépendre d'un aller-retour réseau.
@@ -194,6 +264,7 @@ onMounted(async () => {
 
   const meta = await fetchGameMeta(lobbyId.value)
   hostId.value = meta?.hostId ?? null
+  powerupsEnabled.value = meta?.powerupsEnabled ?? false
 
   // Partie déjà finie (rechargement après le dernier round) : direction les résultats.
   if (meta?.status === 'finished') {
@@ -216,6 +287,9 @@ onMounted(async () => {
   question.value = loaded
   remaining.value = remainingSeconds(loaded.startedAt, serverNow())
   await refreshLeaderboard()
+  await refreshActivePowerups()
+  applyFog()
+  streak.value = await fetchMyStreak(lobbyId.value)
   status.value = 'loaded'
   startTicker()
 
@@ -231,19 +305,30 @@ onMounted(async () => {
       goToResults()
     }
   })
+
+  phaseChannel = subscribeToLobbyPhase(lobbyId.value, phase => {
+    if (phase === 'powerup') {
+      stopTicker()
+      goToPowerupRoom()
+    }
+  })
 })
 
-// Ne laisser ni intervalle ni canal Realtime ouverts après la sortie de la page.
+// Ne laisser ni intervalle, ni minuteur de flou, ni canal Realtime ouverts après
+// la sortie de la page.
 onUnmounted(() => {
   stopTicker()
-  for (const channel of [roundsChannel, scoresChannel, statusChannel]) {
+  clearFog()
+  for (const channel of [roundsChannel, scoresChannel, statusChannel, phaseChannel]) {
     if (channel) unsubscribeChannel(channel)
   }
 })
 
 const onAnswer = async (key: string) => {
-  // On ne répond qu'une fois, jamais pendant une soumission, jamais hors délai.
+  // On ne répond qu'une fois, jamais pendant une soumission, jamais hors délai,
+  // et jamais sur une réponse écartée par un 50/50 (le serveur la refuse aussi).
   if (answered.value || pending.value || timeUp.value || !question.value) return
+  if (isMasked(key)) return
   answerError.value = ''
 
   const result = await submitAnswer(question.value.roundId, key)
@@ -256,6 +341,8 @@ const onAnswer = async (key: string) => {
   // (les autres clients le verront via la souscription `subscribeToScores`).
   lastResult.value = result
   outcome.value = { selectedKey: key, correctKey: result.correctKey }
+  // La série est celle du serveur : elle retombe à 0 d'elle-même sur une erreur.
+  streak.value = result.streak
   await refreshLeaderboard()
 }
 </script>
@@ -306,7 +393,9 @@ const onAnswer = async (key: string) => {
         </div>
 
         <div class="board__question">
-          <h1 class="question">{{ question.questionText }}</h1>
+          <h1 class="question" :class="{ 'question--fogged': fogged }">
+            {{ question.questionText }}
+          </h1>
         </div>
 
         <div class="answers" role="group" aria-label="Réponses proposées">
@@ -316,14 +405,19 @@ const onAnswer = async (key: string) => {
             class="answer"
             :class="{
               'answer--correct': stateOf(answer.key) === 'correct',
-              'answer--incorrect': stateOf(answer.key) === 'incorrect'
+              'answer--incorrect': stateOf(answer.key) === 'incorrect',
+              'answer--masked': isMasked(answer.key)
             }"
             type="button"
-            :disabled="answered || pending || timeUp"
+            :disabled="answered || pending || timeUp || isMasked(answer.key)"
             @click="onAnswer(answer.key)"
           >
             <span class="answer__key" aria-hidden="true">{{ answer.key }}</span>
             <span class="answer__text">{{ answer.text }}</span>
+            <!-- L'atténuation seule ne dit rien : la raison est donnée en toutes lettres. -->
+            <span v-if="isMasked(answer.key)" class="sr-only">
+              Réponse écartée par le 50/50
+            </span>
             <!-- État doublé d'un libellé texte : jamais porté par la seule couleur (RGAA 3.1). -->
             <span
               v-if="stateOf(answer.key) === 'correct'"
@@ -346,6 +440,69 @@ const onAnswer = async (key: string) => {
       </section>
 
       <aside class="hud">
+        <!-- Série et effets n'existent que dans un salon jouant avec les power-ups. -->
+        <template v-if="powerupsEnabled">
+          <section class="streak" aria-labelledby="streak-title">
+            <div class="streak__header">
+              <h2 id="streak-title" class="streak__title">Série de victoires</h2>
+              <p class="streak__count">
+                <span aria-hidden="true">{{ streakFilled }} / {{ POWERUP_STREAK_GOAL }}</span>
+                <span class="sr-only">
+                  {{ streakFilled }} bonne réponse d’affilée sur {{ POWERUP_STREAK_GOAL }}
+                </span>
+              </p>
+            </div>
+
+            <!-- Doublon visuel du compteur ci-dessus : rien à restituer en plus. -->
+            <div class="streak__bar" aria-hidden="true">
+              <span
+                v-for="step in POWERUP_STREAK_GOAL"
+                :key="step"
+                class="streak__step"
+                :class="{ 'streak__step--filled': step <= streakFilled }"
+              />
+            </div>
+
+            <!-- Palier atteint : couleur DOUBLÉE d'un libellé texte (RGAA 3.1). -->
+            <p v-if="streakReached" class="streak__unlocked">
+              <img src="/icons/bolt.svg" alt="" width="11" height="13">
+              Tirage débloqué
+            </p>
+            <p class="sr-only" role="status">{{ streakAnnouncement }}</p>
+          </section>
+
+          <section class="effects" aria-labelledby="effects-title">
+            <h2 id="effects-title" class="effects__title">Power-ups activés</h2>
+
+            <!-- Emplacement conservé même sans effet en cours (maquette). -->
+            <ul class="effects__list">
+              <li v-for="effect in activePowerups" :key="effect.instanceId" class="effect">
+                <span class="effect__badge" :class="`effect__badge--${effect.kind}`">
+                  <!-- Glyphe distinct par nature : l'info ne tient pas qu'à la couleur (RGAA 3.1).
+                       Décoratif ici — « Bonus : » / « Malus : » est porté par le libellé. -->
+                  <img
+                    class="effect__glyph"
+                    :src="effect.kind === 'bonus'
+                      ? '/icons/powerup-bonus.svg'
+                      : '/icons/powerup-malus.svg'"
+                    alt=""
+                    width="18"
+                    height="18"
+                  >
+                </span>
+                <span class="effect__name">
+                  <span class="sr-only">{{ effect.kind === 'bonus' ? 'Bonus :' : 'Malus :' }}</span>
+                  {{ effect.name }}
+                  <span v-if="effect.durationS !== null" class="sr-only">
+                    , {{ effect.durationS }} secondes
+                  </span>
+                </span>
+              </li>
+            </ul>
+            <p v-if="!activePowerups.length" class="sr-only">Aucun effet en cours.</p>
+          </section>
+        </template>
+
         <section class="leaderboard" aria-labelledby="leaderboard-title">
           <h2 id="leaderboard-title" class="leaderboard__title">
             <img src="/icons/rank.svg" alt="" width="16" height="16">
@@ -501,6 +658,13 @@ const onAnswer = async (key: string) => {
   font-weight: var(--weight-semibold);
   letter-spacing: 1px;
   line-height: normal;
+  transition: filter 0.3s ease;
+}
+
+
+.question--fogged {
+  filter: blur(8px);
+  user-select: none;
 }
 
 .answers {
@@ -580,6 +744,11 @@ const onAnswer = async (key: string) => {
   opacity: 0.55;
 }
 
+
+.answer--masked:disabled:not(.answer--correct):not(.answer--incorrect) {
+  opacity: 0.18;
+}
+
 .answer__flag {
   margin-left: auto;
   flex-shrink: 0;
@@ -611,6 +780,153 @@ const onAnswer = async (key: string) => {
   gap: 24px;
   padding: 42px 24px;
   background-color: var(--color-surface-overlay);
+}
+
+/* --- Série de bonnes réponses ------------------------------------------ */
+
+.streak {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.streak__header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.streak__title {
+  margin: 0;
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  line-height: 20px;
+  text-transform: uppercase;
+}
+
+.streak__count {
+  margin: 0;
+  flex-shrink: 0;
+  color: var(--color-success);
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  line-height: 20px;
+}
+
+.streak__bar {
+  display: flex;
+  gap: 8px;
+}
+
+.streak__step {
+  flex: 1;
+  height: 8px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 4px;
+  background-color: var(--color-accent-subtle);
+}
+
+/* Palier franchi : lueur portée par le jeton, jamais une couleur écrite en dur. */
+.streak__step--filled {
+  border-color: var(--color-success);
+  background-color: var(--color-success);
+  box-shadow: 0 0 5px 0 var(--color-success-subtle);
+}
+
+.streak__unlocked {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--color-success);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: 0.9px;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+/* --- Effets actifs de la manche ---------------------------------------- */
+
+.effects {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.effects__title {
+  margin: 0;
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  line-height: 20px;
+  text-transform: uppercase;
+}
+
+.effects__list {
+  display: flex;
+  /* La maquette réserve la rangée même quand aucun effet n'est en cours. */
+  min-height: 59px;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.effect {
+  display: flex;
+  width: 72px;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Objet graphique porteur d'info → contraste ≥ 3:1 (RGAA 3.3). */
+.effect__badge {
+  display: flex;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid currentcolor;
+  border-radius: 9999px;
+  background-color: var(--color-surface-overlay);
+}
+
+.effect__badge--bonus {
+  color: var(--color-success);
+  box-shadow: 0 0 10px 0 var(--color-success-subtle);
+}
+
+.effect__badge--malus {
+  color: var(--color-danger);
+  box-shadow: 0 0 10px 0 var(--color-danger-subtle);
+}
+
+/* `contain` : les deux glyphes n'ont pas le même rapport, aucun ne doit s'étirer. */
+.effect__glyph {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}
+
+.effect__name {
+  color: var(--color-text);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-regular);
+  letter-spacing: 1px;
+  line-height: 15px;
+  text-align: center;
+  text-transform: uppercase;
 }
 
 .leaderboard {

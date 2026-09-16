@@ -54,6 +54,276 @@ CREATE TYPE "public"."question_category" AS ENUM (
 ALTER TYPE "public"."question_category" OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."apply_powerup"("p_instance_id" "uuid", "p_target_id" "uuid" DEFAULT NULL::"uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_inst    public.player_powerups;
+  v_powerup public.powerups;
+  v_target  uuid;
+begin
+  select * into v_inst from public.player_powerups where id = p_instance_id;
+  if v_inst.id is null then
+    raise exception 'Power-up introuvable';
+  end if;
+
+  if v_inst.owner_id <> auth.uid() then
+    raise exception 'Ce power-up ne vous appartient pas';
+  end if;
+
+  if v_inst.status <> 'drawn' then
+    raise exception 'Power-up déjà utilisé';
+  end if;
+
+  select * into v_powerup from public.powerups where id = v_inst.powerup_id;
+
+  if v_powerup.target = 'self' then
+    v_target := auth.uid();
+  else
+    if p_target_id is null or p_target_id = auth.uid() then
+      raise exception 'Ce malus doit viser un adversaire';
+    end if;
+    if not exists (
+      select 1 from public.lobby_players
+      where lobby_id = v_inst.lobby_id and user_id = p_target_id
+    ) then
+      raise exception 'Cible hors de la partie';
+    end if;
+    v_target := p_target_id;
+  end if;
+
+  update public.player_powerups
+    set target_id = v_target, status = 'applied', applied_at = now()
+    where id = p_instance_id;
+
+  update public.profiles set powerups_used = powerups_used + 1 where id = auth.uid();
+
+  return jsonb_build_object('applied', true, 'target_id', v_target);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."apply_powerup"("p_instance_id" "uuid", "p_target_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."draw_powerup"("p_lobby_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_lobby    public.lobbies;
+  v_streak   int;
+  v_room     int;
+  v_powerup  public.powerups;
+  v_existing public.player_powerups;
+begin
+  select * into v_lobby from public.lobbies where id = p_lobby_id;
+  if v_lobby.id is null then
+    raise exception 'Lobby introuvable';
+  end if;
+
+  if not public.is_lobby_member(p_lobby_id) then
+    raise exception 'Accès refusé';
+  end if;
+
+  if v_lobby.phase <> 'powerup' then
+    raise exception 'La salle de power-up n''est pas ouverte';
+  end if;
+
+  select coalesce(max(round_number), 0) into v_room
+  from public.game_rounds where lobby_id = p_lobby_id;
+
+  select streak into v_streak from public.lobby_players
+  where lobby_id = p_lobby_id and user_id = auth.uid();
+  v_streak := coalesce(v_streak, 0);
+
+  select * into v_existing from public.player_powerups
+  where lobby_id = p_lobby_id and owner_id = auth.uid() and room_number = v_room;
+
+  if v_existing.id is null then
+    if v_streak < 3 then
+      return jsonb_build_object('granted', false, 'streak', v_streak);
+    end if;
+
+    select * into v_powerup from public.powerups where is_active order by random() limit 1;
+    if v_powerup.id is null then
+      raise exception 'Aucun power-up disponible';
+    end if;
+
+    insert into public.player_powerups
+      (lobby_id, owner_id, powerup_id, room_number, effective_round)
+    values (p_lobby_id, auth.uid(), v_powerup.id, v_room, v_room + 1)
+    returning * into v_existing;
+  else
+    select * into v_powerup from public.powerups where id = v_existing.powerup_id;
+  end if;
+
+  return jsonb_build_object(
+    'granted', true,
+    'streak',  v_streak,
+    'powerup', jsonb_build_object(
+      'instance_id', v_existing.id,
+      'code',        v_powerup.code,
+      'kind',        v_powerup.kind,
+      'target',      v_powerup.target,
+      'name',        v_powerup.name,
+      'description', v_powerup.description,
+      'status',      v_existing.status
+    )
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."draw_powerup"("p_lobby_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."finish_game"("p_lobby_id" "uuid") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_lobby public.lobbies;
+begin
+  select * into v_lobby from public.lobbies where id = p_lobby_id;
+  if v_lobby.id is null then
+    raise exception 'Lobby introuvable';
+  end if;
+  if v_lobby.host_id <> auth.uid() then
+    raise exception 'Seul l''hôte peut clôturer la partie';
+  end if;
+  if v_lobby.status <> 'finished' then
+    raise exception 'La partie n''est pas terminée';
+  end if;
+
+  -- Garde-fou anti double-crédit : si l'XP a déjà été créditée, ne rien refaire.
+  if v_lobby.xp_credited then
+    return;
+  end if;
+
+  -- Créditer l'XP (score réel × 10) + games_played à chaque joueur.
+  update public.profiles p
+  set xp = xp + (lp.score * 10),
+      games_played = games_played + 1
+  from public.lobby_players lp
+  where lp.lobby_id = p_lobby_id and lp.user_id = p.id;
+
+  -- Créditer une victoire au meilleur score (si > 0).
+  update public.profiles p
+  set games_won = games_won + 1
+  from public.lobby_players lp
+  where lp.lobby_id = p_lobby_id
+    and lp.user_id = p.id
+    and lp.score = (select max(score) from public.lobby_players where lobby_id = p_lobby_id)
+    and lp.score > 0;
+
+  -- Marquer comme crédité (empêche le double-crédit si rappelée).
+  update public.lobbies set xp_credited = true where id = p_lobby_id;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."finish_game"("p_lobby_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_active_powerups"("p_lobby_id" "uuid", "p_round_number" integer) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_result jsonb;
+begin
+  if not public.is_lobby_member(p_lobby_id) then
+    raise exception 'Accès refusé';
+  end if;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'instance_id', pp.id, 'code', p.code, 'kind', p.kind,
+    'name', p.name, 'duration_s', p.duration_s
+  )), '[]'::jsonb)
+  into v_result
+  from public.player_powerups pp
+  join public.powerups p on p.id = pp.powerup_id
+  where pp.lobby_id = p_lobby_id
+    and pp.target_id = auth.uid()
+    and pp.effective_round = p_round_number
+    and pp.status = 'applied';
+
+  return v_result;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_active_powerups"("p_lobby_id" "uuid", "p_round_number" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_round_question"("p_round_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_round     public.game_rounds;
+  v_question  public.questions;
+  v_disabled  text[] := '{}';
+begin
+  -- 1. Charger le round demandé
+  select * into v_round from public.game_rounds where id = p_round_id;
+  if v_round.id is null then
+    raise exception 'Round introuvable';
+  end if;
+
+  -- 2. Vérifier que l'appelant est bien membre du lobby de ce round
+  --    (on ne sert pas les questions d'une partie où on ne joue pas)
+  if not public.is_lobby_member(v_round.lobby_id) then
+    raise exception 'Accès refusé';
+  end if;
+
+  -- 3. Charger la question
+  select * into v_question from public.questions where id = v_round.question_id;
+
+  -- 4. AJOUT : 50/50. Si le joueur a activé ce bonus pour cette manche, on
+  --    désigne deux mauvaises réponses à masquer. Le tri par empreinte rend le
+  --    choix déterministe : un rechargement de page renvoie les mêmes clés.
+  --    correct_key sert au calcul mais ne sort jamais de la fonction.
+  if exists (
+    select 1 from public.player_powerups pp
+    join public.powerups p on p.id = pp.powerup_id
+    where pp.lobby_id = v_round.lobby_id
+      and pp.target_id = auth.uid()
+      and pp.effective_round = v_round.round_number
+      and pp.status = 'applied'
+      and p.code = 'fifty_fifty'
+  ) then
+    select array_agg(k order by md5(v_round.id::text || auth.uid()::text || k))
+      into v_disabled
+    from (
+      select a->>'key' as k
+      from jsonb_array_elements(v_question.answers) a
+      where a->>'key' <> v_question.correct_key
+    ) wrong;
+    v_disabled := v_disabled[1:2];
+  end if;
+
+  -- 5. Renvoyer l'énoncé + les réponses, MAIS JAMAIS correct_key.
+  --    started_at permet au client de calculer le temps restant.
+  return jsonb_build_object(
+    'round_id',      v_round.id,
+    'round_number',  v_round.round_number,
+    'started_at',    v_round.started_at,
+    'status',        v_round.status,
+    'category',      v_question.category,
+    'question_text', v_question.question_text,
+    'answers',       v_question.answers,   -- [{key,text}...] sans indication de la bonne
+    'disabled_keys', to_jsonb(v_disabled)  -- AJOUT : [] si aucun 50/50 actif
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_round_question"("p_round_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."handle_new_user"() RETURNS "trigger"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
@@ -77,6 +347,21 @@ $$;
 ALTER FUNCTION "public"."handle_new_user"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."health_check"() RETURNS json
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+  select json_build_object(
+    'status', 'ok',
+    'questions', (select count(*) from public.questions),
+    'checked_at', now()
+  );
+$$;
+
+
+ALTER FUNCTION "public"."health_check"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."is_lobby_member"("p_lobby_id" "uuid") RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO 'public'
@@ -86,24 +371,6 @@ CREATE OR REPLACE FUNCTION "public"."is_lobby_member"("p_lobby_id" "uuid") RETUR
     where lobby_id = p_lobby_id and user_id = auth.uid()
   );
 $$;
-
-
--- Active la réplication Realtime pour lobby_players.
--- Le salon d'attente (pages/lobby/[id].vue) s'abonne aux INSERT/DELETE de cette
--- table pour synchroniser la grille des joueurs sans rechargement.
-do $$
-begin
-  if not exists (
-    select 1
-    from pg_publication_tables
-    where pubname = 'supabase_realtime'
-      and schemaname = 'public'
-      and tablename = 'lobby_players'
-  ) then
-    alter publication supabase_realtime add table public.lobby_players;
-  end if;
-end $$;
-
 
 
 ALTER FUNCTION "public"."is_lobby_member"("p_lobby_id" "uuid") OWNER TO "postgres";
@@ -150,6 +417,118 @@ $$;
 ALTER FUNCTION "public"."join_lobby_by_code"("p_code" "text") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."next_round"("p_lobby_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_lobby        public.lobbies;
+  v_current_num  int;
+  v_question     uuid;
+  v_round_id     uuid;
+begin
+  select * into v_lobby from public.lobbies where id = p_lobby_id;
+  if v_lobby.id is null then
+    raise exception 'Lobby introuvable';
+  end if;
+
+  -- AJOUT : seul l'hôte fait avancer la partie (métronome)
+  if v_lobby.host_id <> auth.uid() then
+    raise exception 'Seul l''hôte peut passer au round suivant';
+  end if;
+
+  select coalesce(max(round_number), 0) into v_current_num
+  from public.game_rounds where lobby_id = p_lobby_id;
+
+  -- AJOUT : sortie de salle de power-up.
+  -- La manche courante a déjà été clôturée à l'entrée ; on reprend simplement
+  -- le cours des questions sans toucher au numéro de manche.
+  if v_lobby.phase = 'powerup' then
+    update public.lobbies
+      set phase = 'question', phase_started_at = null
+      where id = p_lobby_id;
+  else
+    update public.game_rounds set status = 'finished'
+    where lobby_id = p_lobby_id and round_number = v_current_num;
+
+    if v_current_num >= 10 then
+      update public.lobbies set status = 'finished' where id = p_lobby_id;
+      return jsonb_build_object('finished', true);
+    end if;
+
+    -- AJOUT : entrée en salle après les manches 3, 6 et 9.
+    -- On rend la main sans créer la manche suivante : elle sera créée au
+    -- prochain appel, à la sortie de la salle. Aucune question n'est sautée.
+    if v_lobby.powerups_enabled and v_current_num in (3, 6, 9) then
+      update public.lobbies
+        set phase = 'powerup', phase_started_at = now()
+        where id = p_lobby_id;
+      return jsonb_build_object(
+        'finished', false,
+        'phase', 'powerup',
+        'room_number', v_current_num
+      );
+    end if;
+  end if;
+
+  select id into v_question from public.questions
+  where category = v_lobby.category
+    and id not in (select question_id from public.game_rounds where lobby_id = p_lobby_id)
+  order by random() limit 1;
+
+  if v_question is null then
+    select id into v_question from public.questions
+    where category = v_lobby.category order by random() limit 1;
+  end if;
+
+  insert into public.game_rounds (lobby_id, question_id, round_number, started_at)
+  values (p_lobby_id, v_question, v_current_num + 1, now())
+  returning id into v_round_id;
+
+  return jsonb_build_object(
+    'finished', false,
+    'phase', 'question',
+    'round_id', v_round_id,
+    'round_number', v_current_num + 1
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."next_round"("p_lobby_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."reset_lobby"("p_lobby_id" "uuid") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_lobby public.lobbies;
+begin
+  select * into v_lobby from public.lobbies where id = p_lobby_id;
+  if v_lobby.id is null then
+    raise exception 'Lobby introuvable';
+  end if;
+  if v_lobby.host_id <> auth.uid() then
+    raise exception 'Seul l''hôte peut relancer le salon';
+  end if;
+
+  -- Nettoyer les données de la partie précédente.
+  delete from public.player_answers where lobby_id = p_lobby_id;
+  delete from public.game_rounds   where lobby_id = p_lobby_id;
+
+  -- Réinitialiser scores/séries et remettre le lobby en attente.
+  update public.lobby_players set score = 0, streak = 0 where lobby_id = p_lobby_id;
+  update public.lobbies
+    set status = 'waiting', xp_credited = false
+    where id = p_lobby_id;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."reset_lobby"("p_lobby_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."rls_auto_enable"() RETURNS "event_trigger"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'pg_catalog'
@@ -181,302 +560,11 @@ $$;
 
 ALTER FUNCTION "public"."rls_auto_enable"() OWNER TO "postgres";
 
-SET default_tablespace = '';
 
-SET default_table_access_method = "heap";
-
-
-CREATE TABLE IF NOT EXISTS "public"."lobbies" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "code" "text" DEFAULT "lpad"((("floor"(("random"() * (1000000)::double precision)))::integer)::"text", 6, '0'::"text") NOT NULL,
-    "name" "text" NOT NULL,
-    "host_id" "uuid",
-    "category" "public"."question_category" NOT NULL,
-    "access" "public"."lobby_access" DEFAULT 'public'::"public"."lobby_access" NOT NULL,
-    "max_players" integer DEFAULT 6 NOT NULL,
-    "powerups_enabled" boolean DEFAULT true NOT NULL,
-    "status" "public"."lobby_status" DEFAULT 'waiting'::"public"."lobby_status" NOT NULL,
-    "xp_credited" boolean DEFAULT false NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "lobbies_max_players_check" CHECK ((("max_players" >= 2) AND ("max_players" <= 6)))
-);
-
-
-ALTER TABLE "public"."lobbies" OWNER TO "postgres";
-
-
-CREATE TABLE IF NOT EXISTS "public"."lobby_players" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "lobby_id" "uuid",
-    "user_id" "uuid",
-    "is_host" boolean DEFAULT false NOT NULL,
-    "is_ready" boolean DEFAULT false NOT NULL,
-    "score" integer DEFAULT 0 NOT NULL,
-    "streak" integer DEFAULT 0 NOT NULL,
-    "joined_at" timestamp with time zone DEFAULT "now"() NOT NULL
-);
-
-
-ALTER TABLE "public"."lobby_players" OWNER TO "postgres";
-
-
-CREATE TABLE IF NOT EXISTS "public"."profiles" (
-    "id" "uuid" NOT NULL,
-    "pseudo" "text" NOT NULL,
-    "avatar_url" "text",
-    "xp" integer DEFAULT 0 NOT NULL,
-    "battlecoin_balance" integer DEFAULT 0 NOT NULL,
-    "games_played" integer DEFAULT 0 NOT NULL,
-    "games_won" integer DEFAULT 0 NOT NULL,
-    "powerups_used" integer DEFAULT 0 NOT NULL,
-    "is_anonymous" boolean DEFAULT false NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL
-);
-
-
-ALTER TABLE "public"."profiles" OWNER TO "postgres";
-
-
-CREATE TABLE IF NOT EXISTS "public"."questions" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "category" "public"."question_category" NOT NULL,
-    "question_text" "text" NOT NULL,
-    "answers" "jsonb" NOT NULL,
-    "correct_key" "text" NOT NULL,
-    "abundance_answer" "jsonb",
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL
-);
-
-
-ALTER TABLE "public"."questions" OWNER TO "postgres";
-
-
-ALTER TABLE ONLY "public"."lobbies"
-    ADD CONSTRAINT "lobbies_code_key" UNIQUE ("code");
-
-
-
-ALTER TABLE ONLY "public"."lobbies"
-    ADD CONSTRAINT "lobbies_pkey" PRIMARY KEY ("id");
-
-
-
-ALTER TABLE ONLY "public"."lobby_players"
-    ADD CONSTRAINT "lobby_players_lobby_id_user_id_key" UNIQUE ("lobby_id", "user_id");
-
-
-
-ALTER TABLE ONLY "public"."lobby_players"
-    ADD CONSTRAINT "lobby_players_pkey" PRIMARY KEY ("id");
-
-
-
-ALTER TABLE ONLY "public"."profiles"
-    ADD CONSTRAINT "profiles_pkey" PRIMARY KEY ("id");
-
-
-
-ALTER TABLE ONLY "public"."profiles"
-    ADD CONSTRAINT "profiles_pseudo_key" UNIQUE ("pseudo");
-
-
-
-ALTER TABLE ONLY "public"."questions"
-    ADD CONSTRAINT "questions_pkey" PRIMARY KEY ("id");
-
-
-
-ALTER TABLE ONLY "public"."lobbies"
-    ADD CONSTRAINT "lobbies_host_id_fkey" FOREIGN KEY ("host_id") REFERENCES "public"."profiles"("id") ON DELETE CASCADE;
-
-
-
-ALTER TABLE ONLY "public"."lobby_players"
-    ADD CONSTRAINT "lobby_players_lobby_id_fkey" FOREIGN KEY ("lobby_id") REFERENCES "public"."lobbies"("id") ON DELETE CASCADE;
-
-
-
-ALTER TABLE ONLY "public"."lobby_players"
-    ADD CONSTRAINT "lobby_players_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("id") ON DELETE CASCADE;
-
-
-
-ALTER TABLE ONLY "public"."profiles"
-    ADD CONSTRAINT "profiles_id_fkey" FOREIGN KEY ("id") REFERENCES "auth"."users"("id") ON DELETE CASCADE;
-
-
-
-CREATE POLICY "create own lobby" ON "public"."lobbies" FOR INSERT TO "authenticated" WITH CHECK (("host_id" = "auth"."uid"()));
-
-
-
-CREATE POLICY "host updates own lobby" ON "public"."lobbies" FOR UPDATE TO "authenticated" USING (("host_id" = "auth"."uid"())) WITH CHECK (("host_id" = "auth"."uid"()));
-
-
-
-CREATE POLICY "join as self" ON "public"."lobby_players" FOR INSERT TO "authenticated" WITH CHECK (("user_id" = "auth"."uid"()));
-
-
-
-CREATE POLICY "leave as self" ON "public"."lobby_players" FOR DELETE TO "authenticated" USING (("user_id" = "auth"."uid"()));
-
-
-
-ALTER TABLE "public"."lobbies" ENABLE ROW LEVEL SECURITY;
-
-
-ALTER TABLE "public"."lobby_players" ENABLE ROW LEVEL SECURITY;
-
-
-ALTER TABLE "public"."profiles" ENABLE ROW LEVEL SECURITY;
-
-
-CREATE POLICY "profiles readable by authenticated" ON "public"."profiles" FOR SELECT TO "authenticated" USING (true);
-
-
-
-ALTER TABLE "public"."questions" ENABLE ROW LEVEL SECURITY;
-
-
-CREATE POLICY "read lobby_players (member or public waiting)" ON "public"."lobby_players" FOR SELECT TO "authenticated" USING (("public"."is_lobby_member"("lobby_id") OR (EXISTS ( SELECT 1
-   FROM "public"."lobbies" "l"
-  WHERE (("l"."id" = "lobby_players"."lobby_id") AND ("l"."access" = 'public'::"public"."lobby_access") AND ("l"."status" = 'waiting'::"public"."lobby_status"))))));
-
-
-
-CREATE POLICY "read public waiting lobbies or own membership" ON "public"."lobbies" FOR SELECT TO "authenticated" USING (((("access" = 'public'::"public"."lobby_access") AND ("status" = 'waiting'::"public"."lobby_status")) OR ("host_id" = "auth"."uid"()) OR "public"."is_lobby_member"("id")));
-
-
-
-CREATE POLICY "users update own profile" ON "public"."profiles" FOR UPDATE TO "authenticated" USING (("auth"."uid"() = "id")) WITH CHECK (("auth"."uid"() = "id"));
-
-
-
-GRANT USAGE ON SCHEMA "public" TO "postgres";
-GRANT USAGE ON SCHEMA "public" TO "anon";
-GRANT USAGE ON SCHEMA "public" TO "authenticated";
-GRANT USAGE ON SCHEMA "public" TO "service_role";
-
-
-
-GRANT ALL ON FUNCTION "public"."join_lobby_by_code"("p_code" "text") TO "authenticated";
-
-
-
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."lobbies" TO "anon";
-GRANT SELECT,INSERT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN,UPDATE ON TABLE "public"."lobbies" TO "authenticated";
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."lobbies" TO "service_role";
-
-
-
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."lobby_players" TO "anon";
-GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."lobby_players" TO "authenticated";
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."lobby_players" TO "service_role";
-
-
-
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."profiles" TO "anon";
-GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."profiles" TO "authenticated";
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."profiles" TO "service_role";
-
-
-
-GRANT UPDATE("pseudo") ON TABLE "public"."profiles" TO "authenticated";
-
-
-
-GRANT UPDATE("avatar_url") ON TABLE "public"."profiles" TO "authenticated";
-
-
-
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."questions" TO "anon";
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."questions" TO "authenticated";
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."questions" TO "service_role";
-
-
-
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "postgres";
-
-
-
-
-
-
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "postgres";
-
-
-
-
-
-
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "postgres";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLES TO "anon";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLES TO "authenticated";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLES TO "service_role";
-
-
-
-
-
-
-
-create table public.game_rounds (
-  id           uuid primary key default gen_random_uuid(),
-  lobby_id     uuid not null references public.lobbies(id) on delete cascade,
-  question_id  uuid not null references public.questions(id),
-  round_number int  not null check (round_number between 1 and 10),
-  started_at   timestamptz not null default now(),
-  status       text not null default 'active' check (status in ('active','finished')),
-  unique (lobby_id, round_number)   -- garantit l'idempotence : un seul round N par partie
-);
-
-alter table public.game_rounds enable row level security;
-
-
-create table public.player_answers (
-  id           uuid primary key default gen_random_uuid(),
-  lobby_id     uuid not null references public.lobbies(id) on delete cascade,
-  round_id     uuid not null references public.game_rounds(id) on delete cascade,
-  user_id      uuid not null references public.profiles(id) on delete cascade,
-  selected_key text not null,
-  is_correct   boolean not null,
-  answered_at  timestamptz not null default now(),
-  unique (round_id, user_id)   -- un joueur ne répond qu'une fois par question
-);
-
-alter table public.player_answers enable row level security;
-
--- Les membres du lobby voient les rounds de leur partie.
-create policy "read rounds of my lobby"
-  on public.game_rounds for select
-  to authenticated
-  using (public.is_lobby_member(lobby_id));
-
--- Les membres voient les réponses de leur partie (pour le classement live).
-create policy "read answers of my lobby"
-  on public.player_answers for select
-  to authenticated
-  using (public.is_lobby_member(lobby_id));
-
-grant select on public.game_rounds to authenticated;
-grant select on public.player_answers to authenticated;
-
-do $$
-begin
-  if not exists (
-    select 1 from pg_publication_tables
-    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'game_rounds'
-  ) then
-    alter publication supabase_realtime add table public.game_rounds;
-  end if;
-end $$;
-
-create or replace function public.start_game(p_lobby_id uuid)
-returns uuid                        -- renvoie l'id du 1er round créé
-language plpgsql
-security definer set search_path = public
-as $$
+CREATE OR REPLACE FUNCTION "public"."start_game"("p_lobby_id" "uuid") RETURNS "uuid"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
 declare
   v_lobby     public.lobbies;
   v_question  uuid;
@@ -517,301 +605,494 @@ begin
 end;
 $$;
 
-grant execute on function public.start_game(uuid) to authenticated;
+
+ALTER FUNCTION "public"."start_game"("p_lobby_id" "uuid") OWNER TO "postgres";
+
+SET default_tablespace = '';
+
+SET default_table_access_method = "heap";
 
 
-create or replace function public.next_round(p_lobby_id uuid)
-returns jsonb
-language plpgsql
-security definer set search_path = public
-as $$
-declare
-  v_lobby        public.lobbies;
-  v_current_num  int;
-  v_question     uuid;
-  v_round_id     uuid;
-begin
-  select * into v_lobby from public.lobbies where id = p_lobby_id;
-  if v_lobby.id is null then
-    raise exception 'Lobby introuvable';
-  end if;
-
-  -- AJOUT : seul l'hôte fait avancer la partie (métronome)
-  if v_lobby.host_id <> auth.uid() then
-    raise exception 'Seul l''hôte peut passer au round suivant';
-  end if;
-
-  select coalesce(max(round_number), 0) into v_current_num
-  from public.game_rounds where lobby_id = p_lobby_id;
-
-  update public.game_rounds set status = 'finished'
-  where lobby_id = p_lobby_id and round_number = v_current_num;
-
-  if v_current_num >= 10 then
-    update public.lobbies set status = 'finished' where id = p_lobby_id;
-    return jsonb_build_object('finished', true);
-  end if;
-
-  select id into v_question from public.questions
-  where category = v_lobby.category
-    and id not in (select question_id from public.game_rounds where lobby_id = p_lobby_id)
-  order by random() limit 1;
-
-  if v_question is null then
-    select id into v_question from public.questions
-    where category = v_lobby.category order by random() limit 1;
-  end if;
-
-  insert into public.game_rounds (lobby_id, question_id, round_number, started_at)
-  values (p_lobby_id, v_question, v_current_num + 1, now())
-  returning id into v_round_id;
-
-  return jsonb_build_object('finished', false, 'round_id', v_round_id, 'round_number', v_current_num + 1);
-end;
-$$;
-
-create or replace function public.get_round_question(p_round_id uuid)
-returns jsonb
-language plpgsql
-security definer set search_path = public
-as $$
-declare
-  v_round     public.game_rounds;
-  v_question  public.questions;
-begin
-  -- 1. Charger le round demandé
-  select * into v_round from public.game_rounds where id = p_round_id;
-  if v_round.id is null then
-    raise exception 'Round introuvable';
-  end if;
-
-  -- 2. Vérifier que l'appelant est bien membre du lobby de ce round
-  --    (on ne sert pas les questions d'une partie où on ne joue pas)
-  if not public.is_lobby_member(v_round.lobby_id) then
-    raise exception 'Accès refusé';
-  end if;
-
-  -- 3. Charger la question
-  select * into v_question from public.questions where id = v_round.question_id;
-
-  -- 4. Renvoyer l'énoncé + les réponses, MAIS JAMAIS correct_key.
-  --    started_at permet au client de calculer le temps restant.
-  return jsonb_build_object(
-    'round_id',     v_round.id,
-    'round_number', v_round.round_number,
-    'started_at',   v_round.started_at,
-    'status',       v_round.status,
-    'category',     v_question.category,
-    'question_text', v_question.question_text,
-    'answers',      v_question.answers   -- [{key,text}...] sans indication de la bonne
-  );
-end;
-$$;
-
-grant execute on function public.get_round_question(uuid) to authenticated;
+CREATE TABLE IF NOT EXISTS "public"."game_rounds" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "lobby_id" "uuid" NOT NULL,
+    "question_id" "uuid" NOT NULL,
+    "round_number" integer NOT NULL,
+    "started_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "status" "text" DEFAULT 'active'::"text" NOT NULL,
+    CONSTRAINT "game_rounds_round_number_check" CHECK ((("round_number" >= 1) AND ("round_number" <= 10))),
+    CONSTRAINT "game_rounds_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'finished'::"text"])))
+);
 
 
-grant select on public.game_rounds to service_role;
-grant select, insert on public.player_answers to service_role;
-grant select, update on public.lobby_players to service_role;
-grant select on public.questions to service_role;
-
--- Active la réplication Realtime pour la table `lobbies` (étape 3c, synchro multi-client).
---
--- Deux usages en dépendent :
---   - redirection automatique des joueurs vers la partie quand `status` passe à
---     'in_progress' (souscription depuis pages/lobby/[id].vue) ;
---   - bascule des non-hôtes sur l'écran de fin quand `status` passe à 'finished'
---     (souscription depuis pages/game/[id].vue).
---
--- `lobby_players` et `game_rounds` étaient déjà publiées (voir schema.sql).
--- Idempotent : n'ajoute la table que si elle n'est pas déjà dans la publication.
-do $$
-begin
-  if not exists (
-    select 1 from pg_publication_tables
-    where pubname = 'supabase_realtime'
-      and schemaname = 'public'
-      and tablename = 'lobbies'
-  ) then
-    alter publication supabase_realtime add table public.lobbies;
-  end if;
-end $$;
+ALTER TABLE "public"."game_rounds" OWNER TO "postgres";
 
 
--- finish_game : crédite l'XP UNIQUEMENT (score × 10), idempotent via `xp_credited`.
--- La réinitialisation du lobby appartient désormais à `reset_lobby` (rejeu), pour
--- que l'écran de résultats puisse lire les scores intacts (voir migration
--- db/migrations/2026-07-22_finish_game_reset_lobby.sql).
-create or replace function public.finish_game(p_lobby_id uuid)
-returns void
-language plpgsql
-security definer set search_path = public
-as $$
-declare
-  v_lobby public.lobbies;
-begin
-  select * into v_lobby from public.lobbies where id = p_lobby_id;
-  if v_lobby.id is null then
-    raise exception 'Lobby introuvable';
-  end if;
-  if v_lobby.host_id <> auth.uid() then
-    raise exception 'Seul l''hôte peut clôturer la partie';
-  end if;
-  if v_lobby.status <> 'finished' then
-    raise exception 'La partie n''est pas terminée';
-  end if;
-
-  -- Garde-fou anti double-crédit : si l'XP a déjà été créditée, ne rien refaire.
-  if v_lobby.xp_credited then
-    return;
-  end if;
-
-  -- Créditer l'XP (score réel × 10) + games_played à chaque joueur.
-  update public.profiles p
-  set xp = xp + (lp.score * 10),
-      games_played = games_played + 1
-  from public.lobby_players lp
-  where lp.lobby_id = p_lobby_id and lp.user_id = p.id;
-
-  -- Créditer une victoire au meilleur score (si > 0).
-  update public.profiles p
-  set games_won = games_won + 1
-  from public.lobby_players lp
-  where lp.lobby_id = p_lobby_id
-    and lp.user_id = p.id
-    and lp.score = (select max(score) from public.lobby_players where lobby_id = p_lobby_id)
-    and lp.score > 0;
-
-  -- Marquer comme crédité (empêche le double-crédit si rappelée).
-  update public.lobbies set xp_credited = true where id = p_lobby_id;
-end;
-$$;
-
-grant execute on function public.finish_game(uuid) to authenticated;
+CREATE TABLE IF NOT EXISTS "public"."lobbies" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "code" "text" DEFAULT "lpad"((("floor"(("random"() * (1000000)::double precision)))::integer)::"text", 6, '0'::"text") NOT NULL,
+    "name" "text" NOT NULL,
+    "host_id" "uuid",
+    "category" "public"."question_category" NOT NULL,
+    "access" "public"."lobby_access" DEFAULT 'public'::"public"."lobby_access" NOT NULL,
+    "max_players" integer DEFAULT 6 NOT NULL,
+    "powerups_enabled" boolean DEFAULT true NOT NULL,
+    "status" "public"."lobby_status" DEFAULT 'waiting'::"public"."lobby_status" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "xp_credited" boolean DEFAULT false NOT NULL,
+    "phase" "text" DEFAULT 'question'::"text" NOT NULL,
+    "phase_started_at" timestamp with time zone,
+    CONSTRAINT "lobbies_max_players_check" CHECK ((("max_players" >= 2) AND ("max_players" <= 6))),
+    CONSTRAINT "lobbies_phase_check" CHECK (("phase" = ANY (ARRAY['question'::"text", 'powerup'::"text"])))
+);
 
 
--- reset_lobby : réinitialise le lobby pour le rejeu (bouton « Rejouer », hôte seul).
-create or replace function public.reset_lobby(p_lobby_id uuid)
-returns void
-language plpgsql
-security definer set search_path = public
-as $$
-declare
-  v_lobby public.lobbies;
-begin
-  select * into v_lobby from public.lobbies where id = p_lobby_id;
-  if v_lobby.id is null then
-    raise exception 'Lobby introuvable';
-  end if;
-  if v_lobby.host_id <> auth.uid() then
-    raise exception 'Seul l''hôte peut relancer le salon';
-  end if;
-
-  -- Nettoyer les données de la partie précédente.
-  delete from public.player_answers where lobby_id = p_lobby_id;
-  delete from public.game_rounds   where lobby_id = p_lobby_id;
-
-  -- Réinitialiser scores/séries et remettre le lobby en attente.
-  update public.lobby_players set score = 0, streak = 0 where lobby_id = p_lobby_id;
-  update public.lobbies
-    set status = 'waiting', xp_credited = false
-    where id = p_lobby_id;
-end;
-$$;
-
-grant execute on function public.reset_lobby(uuid) to authenticated;
+ALTER TABLE "public"."lobbies" OWNER TO "postgres";
 
 
--- Étape 3d — fin de partie : scinder le crédit d'XP et la réinitialisation du lobby.
---
--- Avant, `finish_game` créditait l'XP ET réinitialisait le lobby d'un bloc, ce qui
--- effaçait les scores avant que l'écran de résultats puisse les afficher. On sépare :
---   - `finish_game`  : crédite l'XP (score × 10), idempotent, laisse `status = 'finished'` ;
---   - `reset_lobby`  : remet le lobby en attente pour le rejeu (scores à 0, rounds purgés).
---
--- L'idempotence du crédit repose sur une nouvelle colonne `lobbies.xp_credited`.
+CREATE TABLE IF NOT EXISTS "public"."lobby_players" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "lobby_id" "uuid",
+    "user_id" "uuid",
+    "is_host" boolean DEFAULT false NOT NULL,
+    "is_ready" boolean DEFAULT false NOT NULL,
+    "score" integer DEFAULT 0 NOT NULL,
+    "streak" integer DEFAULT 0 NOT NULL,
+    "joined_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
 
--- 1. Drapeau anti double-crédit (idempotence de finish_game).
-alter table public.lobbies
-  add column if not exists xp_credited boolean not null default false;
 
--- 2. finish_game : crédite l'XP UNIQUEMENT (plus de réinitialisation).
-create or replace function public.finish_game(p_lobby_id uuid)
-returns void
-language plpgsql
-security definer set search_path = public
-as $$
-declare
-  v_lobby public.lobbies;
-begin
-  select * into v_lobby from public.lobbies where id = p_lobby_id;
-  if v_lobby.id is null then
-    raise exception 'Lobby introuvable';
-  end if;
-  if v_lobby.host_id <> auth.uid() then
-    raise exception 'Seul l''hôte peut clôturer la partie';
-  end if;
-  if v_lobby.status <> 'finished' then
-    raise exception 'La partie n''est pas terminée';
-  end if;
+ALTER TABLE "public"."lobby_players" OWNER TO "postgres";
 
-  -- Garde-fou anti double-crédit : si l'XP a déjà été créditée pour cette partie,
-  -- ne rien refaire (idempotent).
-  if v_lobby.xp_credited then
-    return;
-  end if;
 
-  -- Créditer l'XP (score réel × 10) + games_played à chaque joueur.
-  update public.profiles p
-  set xp = xp + (lp.score * 10),
-      games_played = games_played + 1
-  from public.lobby_players lp
-  where lp.lobby_id = p_lobby_id and lp.user_id = p.id;
+CREATE TABLE IF NOT EXISTS "public"."player_answers" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "lobby_id" "uuid" NOT NULL,
+    "round_id" "uuid" NOT NULL,
+    "user_id" "uuid" NOT NULL,
+    "selected_key" "text" NOT NULL,
+    "is_correct" boolean NOT NULL,
+    "answered_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
 
-  -- Créditer une victoire au meilleur score (si > 0).
-  update public.profiles p
-  set games_won = games_won + 1
-  from public.lobby_players lp
-  where lp.lobby_id = p_lobby_id
-    and lp.user_id = p.id
-    and lp.score = (select max(score) from public.lobby_players where lobby_id = p_lobby_id)
-    and lp.score > 0;
 
-  -- Marquer comme crédité (empêche le double-crédit si rappelée).
-  update public.lobbies set xp_credited = true where id = p_lobby_id;
-end;
-$$;
+ALTER TABLE "public"."player_answers" OWNER TO "postgres";
 
-grant execute on function public.finish_game(uuid) to authenticated;
 
--- 3. reset_lobby : réinitialise le lobby pour le rejeu (bouton « Rejouer », hôte).
-create or replace function public.reset_lobby(p_lobby_id uuid)
-returns void
-language plpgsql
-security definer set search_path = public
-as $$
-declare
-  v_lobby public.lobbies;
-begin
-  select * into v_lobby from public.lobbies where id = p_lobby_id;
-  if v_lobby.id is null then
-    raise exception 'Lobby introuvable';
-  end if;
-  if v_lobby.host_id <> auth.uid() then
-    raise exception 'Seul l''hôte peut relancer le salon';
-  end if;
+CREATE TABLE IF NOT EXISTS "public"."player_powerups" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "lobby_id" "uuid" NOT NULL,
+    "owner_id" "uuid" NOT NULL,
+    "powerup_id" "uuid" NOT NULL,
+    "room_number" integer NOT NULL,
+    "effective_round" integer NOT NULL,
+    "target_id" "uuid",
+    "status" "text" DEFAULT 'drawn'::"text" NOT NULL,
+    "drawn_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "applied_at" timestamp with time zone,
+    CONSTRAINT "player_powerups_room_number_check" CHECK (("room_number" = ANY (ARRAY[3, 6, 9]))),
+    CONSTRAINT "player_powerups_status_check" CHECK (("status" = ANY (ARRAY['drawn'::"text", 'applied'::"text", 'consumed'::"text", 'blocked'::"text"])))
+);
 
-  -- Nettoyer les données de la partie précédente.
-  delete from public.player_answers where lobby_id = p_lobby_id;
-  delete from public.game_rounds   where lobby_id = p_lobby_id;
 
-  -- Réinitialiser scores/séries et remettre le lobby en attente.
-  update public.lobby_players set score = 0, streak = 0 where lobby_id = p_lobby_id;
-  update public.lobbies
-    set status = 'waiting', xp_credited = false
-    where id = p_lobby_id;
-end;
-$$;
+ALTER TABLE "public"."player_powerups" OWNER TO "postgres";
 
-grant execute on function public.reset_lobby(uuid) to authenticated;
+
+CREATE TABLE IF NOT EXISTS "public"."powerups" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "code" "text" NOT NULL,
+    "kind" "text" NOT NULL,
+    "target" "text" NOT NULL,
+    "name" "text" NOT NULL,
+    "description" "text" NOT NULL,
+    "duration_s" integer,
+    "is_active" boolean DEFAULT true NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "powerups_kind_check" CHECK (("kind" = ANY (ARRAY['bonus'::"text", 'malus'::"text"]))),
+    CONSTRAINT "powerups_target_check" CHECK (("target" = ANY (ARRAY['self'::"text", 'opponent'::"text"])))
+);
+
+
+ALTER TABLE "public"."powerups" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."profiles" (
+    "id" "uuid" NOT NULL,
+    "pseudo" "text" NOT NULL,
+    "avatar_url" "text",
+    "xp" integer DEFAULT 0 NOT NULL,
+    "battlecoin_balance" integer DEFAULT 0 NOT NULL,
+    "games_played" integer DEFAULT 0 NOT NULL,
+    "games_won" integer DEFAULT 0 NOT NULL,
+    "powerups_used" integer DEFAULT 0 NOT NULL,
+    "is_anonymous" boolean DEFAULT false NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "public"."profiles" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."questions" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "category" "public"."question_category" NOT NULL,
+    "question_text" "text" NOT NULL,
+    "answers" "jsonb" NOT NULL,
+    "correct_key" "text" NOT NULL,
+    "abundance_answer" "jsonb",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "public"."questions" OWNER TO "postgres";
+
+
+ALTER TABLE ONLY "public"."game_rounds"
+    ADD CONSTRAINT "game_rounds_lobby_id_round_number_key" UNIQUE ("lobby_id", "round_number");
+
+
+
+ALTER TABLE ONLY "public"."game_rounds"
+    ADD CONSTRAINT "game_rounds_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."lobbies"
+    ADD CONSTRAINT "lobbies_code_key" UNIQUE ("code");
+
+
+
+ALTER TABLE ONLY "public"."lobbies"
+    ADD CONSTRAINT "lobbies_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."lobby_players"
+    ADD CONSTRAINT "lobby_players_lobby_id_user_id_key" UNIQUE ("lobby_id", "user_id");
+
+
+
+ALTER TABLE ONLY "public"."lobby_players"
+    ADD CONSTRAINT "lobby_players_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."player_answers"
+    ADD CONSTRAINT "player_answers_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."player_answers"
+    ADD CONSTRAINT "player_answers_round_id_user_id_key" UNIQUE ("round_id", "user_id");
+
+
+
+ALTER TABLE ONLY "public"."player_powerups"
+    ADD CONSTRAINT "player_powerups_lobby_id_owner_id_room_number_key" UNIQUE ("lobby_id", "owner_id", "room_number");
+
+
+
+ALTER TABLE ONLY "public"."player_powerups"
+    ADD CONSTRAINT "player_powerups_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."powerups"
+    ADD CONSTRAINT "powerups_code_key" UNIQUE ("code");
+
+
+
+ALTER TABLE ONLY "public"."powerups"
+    ADD CONSTRAINT "powerups_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."profiles"
+    ADD CONSTRAINT "profiles_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."profiles"
+    ADD CONSTRAINT "profiles_pseudo_key" UNIQUE ("pseudo");
+
+
+
+ALTER TABLE ONLY "public"."questions"
+    ADD CONSTRAINT "questions_pkey" PRIMARY KEY ("id");
+
+
+
+CREATE INDEX "player_powerups_lobby_round_idx" ON "public"."player_powerups" USING "btree" ("lobby_id", "effective_round");
+
+
+
+ALTER TABLE ONLY "public"."game_rounds"
+    ADD CONSTRAINT "game_rounds_lobby_id_fkey" FOREIGN KEY ("lobby_id") REFERENCES "public"."lobbies"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."game_rounds"
+    ADD CONSTRAINT "game_rounds_question_id_fkey" FOREIGN KEY ("question_id") REFERENCES "public"."questions"("id");
+
+
+
+ALTER TABLE ONLY "public"."lobbies"
+    ADD CONSTRAINT "lobbies_host_id_fkey" FOREIGN KEY ("host_id") REFERENCES "public"."profiles"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."lobby_players"
+    ADD CONSTRAINT "lobby_players_lobby_id_fkey" FOREIGN KEY ("lobby_id") REFERENCES "public"."lobbies"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."lobby_players"
+    ADD CONSTRAINT "lobby_players_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."player_answers"
+    ADD CONSTRAINT "player_answers_lobby_id_fkey" FOREIGN KEY ("lobby_id") REFERENCES "public"."lobbies"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."player_answers"
+    ADD CONSTRAINT "player_answers_round_id_fkey" FOREIGN KEY ("round_id") REFERENCES "public"."game_rounds"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."player_answers"
+    ADD CONSTRAINT "player_answers_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."player_powerups"
+    ADD CONSTRAINT "player_powerups_lobby_id_fkey" FOREIGN KEY ("lobby_id") REFERENCES "public"."lobbies"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."player_powerups"
+    ADD CONSTRAINT "player_powerups_owner_id_fkey" FOREIGN KEY ("owner_id") REFERENCES "public"."profiles"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."player_powerups"
+    ADD CONSTRAINT "player_powerups_powerup_id_fkey" FOREIGN KEY ("powerup_id") REFERENCES "public"."powerups"("id");
+
+
+
+ALTER TABLE ONLY "public"."player_powerups"
+    ADD CONSTRAINT "player_powerups_target_id_fkey" FOREIGN KEY ("target_id") REFERENCES "public"."profiles"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."profiles"
+    ADD CONSTRAINT "profiles_id_fkey" FOREIGN KEY ("id") REFERENCES "auth"."users"("id") ON DELETE CASCADE;
+
+
+
+CREATE POLICY "create own lobby" ON "public"."lobbies" FOR INSERT TO "authenticated" WITH CHECK (("host_id" = "auth"."uid"()));
+
+
+
+ALTER TABLE "public"."game_rounds" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "host updates own lobby" ON "public"."lobbies" FOR UPDATE TO "authenticated" USING (("host_id" = "auth"."uid"())) WITH CHECK (("host_id" = "auth"."uid"()));
+
+
+
+CREATE POLICY "join as self" ON "public"."lobby_players" FOR INSERT TO "authenticated" WITH CHECK (("user_id" = "auth"."uid"()));
+
+
+
+CREATE POLICY "leave as self" ON "public"."lobby_players" FOR DELETE TO "authenticated" USING (("user_id" = "auth"."uid"()));
+
+
+
+ALTER TABLE "public"."lobbies" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."lobby_players" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."player_answers" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."player_powerups" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "player_powerups_select" ON "public"."player_powerups" FOR SELECT TO "authenticated" USING ("public"."is_lobby_member"("lobby_id"));
+
+
+
+ALTER TABLE "public"."powerups" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "powerups_select" ON "public"."powerups" FOR SELECT TO "authenticated" USING ("is_active");
+
+
+
+ALTER TABLE "public"."profiles" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "profiles readable by authenticated" ON "public"."profiles" FOR SELECT TO "authenticated" USING (true);
+
+
+
+ALTER TABLE "public"."questions" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "read answers of my lobby" ON "public"."player_answers" FOR SELECT TO "authenticated" USING ("public"."is_lobby_member"("lobby_id"));
+
+
+
+CREATE POLICY "read lobby_players (member or public waiting)" ON "public"."lobby_players" FOR SELECT TO "authenticated" USING (("public"."is_lobby_member"("lobby_id") OR (EXISTS ( SELECT 1
+   FROM "public"."lobbies" "l"
+  WHERE (("l"."id" = "lobby_players"."lobby_id") AND ("l"."access" = 'public'::"public"."lobby_access") AND ("l"."status" = 'waiting'::"public"."lobby_status"))))));
+
+
+
+CREATE POLICY "read public waiting lobbies or own membership" ON "public"."lobbies" FOR SELECT TO "authenticated" USING (((("access" = 'public'::"public"."lobby_access") AND ("status" = 'waiting'::"public"."lobby_status")) OR ("host_id" = "auth"."uid"()) OR "public"."is_lobby_member"("id")));
+
+
+
+CREATE POLICY "read rounds of my lobby" ON "public"."game_rounds" FOR SELECT TO "authenticated" USING ("public"."is_lobby_member"("lobby_id"));
+
+
+
+CREATE POLICY "users update own profile" ON "public"."profiles" FOR UPDATE TO "authenticated" USING (("auth"."uid"() = "id")) WITH CHECK (("auth"."uid"() = "id"));
+
+
+
+GRANT USAGE ON SCHEMA "public" TO "postgres";
+GRANT USAGE ON SCHEMA "public" TO "anon";
+GRANT USAGE ON SCHEMA "public" TO "authenticated";
+GRANT USAGE ON SCHEMA "public" TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."apply_powerup"("p_instance_id" "uuid", "p_target_id" "uuid") TO "authenticated";
+
+
+
+GRANT ALL ON FUNCTION "public"."draw_powerup"("p_lobby_id" "uuid") TO "authenticated";
+
+
+
+GRANT ALL ON FUNCTION "public"."finish_game"("p_lobby_id" "uuid") TO "authenticated";
+
+
+
+GRANT ALL ON FUNCTION "public"."get_active_powerups"("p_lobby_id" "uuid", "p_round_number" integer) TO "authenticated";
+
+
+
+GRANT ALL ON FUNCTION "public"."get_round_question"("p_round_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."health_check"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."health_check"() TO "anon";
+GRANT ALL ON FUNCTION "public"."health_check"() TO "authenticated";
+
+
+
+GRANT ALL ON FUNCTION "public"."join_lobby_by_code"("p_code" "text") TO "authenticated";
+
+
+
+GRANT ALL ON FUNCTION "public"."next_round"("p_lobby_id" "uuid") TO "authenticated";
+
+
+
+GRANT ALL ON FUNCTION "public"."reset_lobby"("p_lobby_id" "uuid") TO "authenticated";
+
+
+
+GRANT ALL ON FUNCTION "public"."start_game"("p_lobby_id" "uuid") TO "authenticated";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."game_rounds" TO "anon";
+GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."game_rounds" TO "authenticated";
+GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."game_rounds" TO "service_role";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."lobbies" TO "anon";
+GRANT SELECT,INSERT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN,UPDATE ON TABLE "public"."lobbies" TO "authenticated";
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."lobbies" TO "service_role";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."lobby_players" TO "anon";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."lobby_players" TO "authenticated";
+GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN,UPDATE ON TABLE "public"."lobby_players" TO "service_role";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."player_answers" TO "anon";
+GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."player_answers" TO "authenticated";
+GRANT SELECT,INSERT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."player_answers" TO "service_role";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."player_powerups" TO "anon";
+GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."player_powerups" TO "authenticated";
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."player_powerups" TO "service_role";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."powerups" TO "anon";
+GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."powerups" TO "authenticated";
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."powerups" TO "service_role";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."profiles" TO "anon";
+GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."profiles" TO "authenticated";
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."profiles" TO "service_role";
+
+
+
+GRANT UPDATE("pseudo") ON TABLE "public"."profiles" TO "authenticated";
+
+
+
+GRANT UPDATE("avatar_url") ON TABLE "public"."profiles" TO "authenticated";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."questions" TO "anon";
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."questions" TO "authenticated";
+GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."questions" TO "service_role";
+
+
+
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "postgres";
+
+
+
+
+
+
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "postgres";
+
+
+
+
+
+
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "postgres";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLES TO "anon";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLES TO "authenticated";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLES TO "service_role";
+
+
+
+
+
+
+

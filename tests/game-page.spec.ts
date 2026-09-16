@@ -519,12 +519,12 @@ describe('Page de jeu — synchro multi-client (Realtime)', () => {
     expect(navigateToMock).toHaveBeenCalledWith('/game/lobby-1/results')
   })
 
-  it('ferme tous les canaux Realtime au démontage (rounds, scores, statut)', async () => {
+  it('ferme tous les canaux Realtime au démontage (rounds, scores, statut, phase)', async () => {
     const wrapper = mountPage()
     await flushPromises()
 
     wrapper.unmount()
 
-    expect(removeChannel).toHaveBeenCalledTimes(3)
+    expect(removeChannel).toHaveBeenCalledTimes(4)
   })
 })

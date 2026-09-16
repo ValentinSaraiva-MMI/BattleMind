@@ -9,6 +9,8 @@ export const TOTAL_ROUNDS = 10
  *  `submit_answer`, seule autorité sur le hors-délai ; ici, pur affichage. */
 export const ROUND_DURATION_S = 10
 
+export const POWERUP_ROOM_DURATION_S = 15
+
 /**
  * Secondes restantes, dérivées du départ SERVEUR (`started_at`), jamais d'un
  * compteur local : un rechargement retombe au bon temps et (3c) tous les clients
